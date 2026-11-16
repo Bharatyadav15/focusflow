@@ -24,6 +24,7 @@ export interface Project {
     id: string;
     title: string;
     done: boolean;
+    parentId?: string;
     requiredTaskIds?: string[];
   }[];
   lists?: ProjectList[];

@@ -284,6 +284,18 @@ pub async fn fetch_calendar_events(
 
                         if let (Some(id), Some(start), Some(end)) = (item.id, start_val, end_val) {
                             let meta = app_data.event_metadata.get(&id);
+                            let linked_tid = app_data
+                                .task_event_links
+                                .iter()
+                                .find(|(_, eid)| eid.as_str() == id.as_str())
+                                .map(|(tid, _)| tid.clone())
+                                .or_else(|| {
+                                    app_data
+                                        .tasks
+                                        .iter()
+                                        .find(|t| t.linked_event_id.as_deref() == Some(id.as_str()) || t.calendar_event_id.as_deref() == Some(id.as_str()))
+                                        .map(|t| t.id.clone())
+                                });
                             all_events.push(CalendarEvent {
                                 id,
                                 calendar_id: cal.id.clone(),
@@ -295,7 +307,7 @@ pub async fn fetch_calendar_events(
                                 end,
                                 is_all_day: Some(is_all_day),
                                 html_link: item.html_link,
-                                linked_task_id: None,
+                                linked_task_id: linked_tid,
                                 priority: meta.and_then(|m| m.priority),
                                 project_id: meta.and_then(|m| m.project_id.clone()),
                             });
@@ -309,11 +321,26 @@ pub async fn fetch_calendar_events(
     // Merge any non-demo offline-created local events that fall inside the range.
     let seen_ids: std::collections::HashSet<String> =
         all_events.iter().map(|e| e.id.clone()).collect();
-    for local_evt in store.get_local_events() {
+    for mut local_evt in store.get_local_events() {
         if !local_evt.id.starts_with("demo-evt-")
             && !seen_ids.contains(&local_evt.id)
             && event_overlaps_range(&local_evt, min_ts, max_ts)
         {
+            if let Some(meta) = app_data.event_metadata.get(&local_evt.id) {
+                if local_evt.priority.is_none() {
+                    local_evt.priority = meta.priority;
+                }
+                if local_evt.project_id.is_none() {
+                    local_evt.project_id = meta.project_id.clone();
+                }
+            }
+            if local_evt.linked_task_id.is_none() {
+                local_evt.linked_task_id = app_data
+                    .task_event_links
+                    .iter()
+                    .find(|(_, eid)| eid.as_str() == local_evt.id.as_str())
+                    .map(|(tid, _)| tid.clone());
+            }
             all_events.push(local_evt);
         }
     }

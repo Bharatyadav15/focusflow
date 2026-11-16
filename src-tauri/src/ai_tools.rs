@@ -1256,10 +1256,23 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                         *state.cached_events.lock().unwrap() = evts.clone();
                         rebuild_tray_menu(app);
                     }
+                    let meta_map = state.store.get_app_data().event_metadata;
+                    let enriched: Vec<Value> = evts
+                        .into_iter()
+                        .map(|e| {
+                            let mut v = serde_json::to_value(&e).unwrap_or(Value::Null);
+                            if let (Some(obj), Some(m)) = (v.as_object_mut(), meta_map.get(&e.id)) {
+                                if let Some(ref plid) = m.project_list_id {
+                                    obj.insert("projectListId".into(), json!(plid));
+                                }
+                            }
+                            v
+                        })
+                        .collect();
                     json!({
                         "ok": true,
-                        "count": evts.len(),
-                        "events": evts
+                        "count": enriched.len(),
+                        "events": enriched
                     })
                 }
                 Err(e) => json!({ "ok": false, "error": e }),
@@ -1736,6 +1749,11 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                                 id: format!("ms-{}-{}", Utc::now().timestamp_millis(), i),
                                 title: t.to_string(),
                                 done: m.get("done").and_then(|d| d.as_bool()).unwrap_or(false),
+                                parent_id: m
+                                    .get("parent_id")
+                                    .or_else(|| m.get("parentId"))
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string()),
                                 required_task_ids: m
                                     .get("required_task_ids")
                                     .or_else(|| m.get("requiredTaskIds"))
@@ -1882,23 +1900,25 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                         Some(t) if !t.trim().is_empty() => t.trim().to_string(),
                         _ => return json!({ "ok": false, "error": "Missing required 'list_title'" }),
                     };
-                    let parent_list_id = args
+                    let parent_id = args
                         .get("parent_list_id")
+                        .or_else(|| args.get("parent_milestone_id"))
                         .and_then(|v| v.as_str())
                         .map(|s| s.trim().to_string())
                         .filter(|s| !s.is_empty());
-                    if let Some(ref pid) = parent_list_id {
-                        if !proj.lists.iter().any(|l| &l.id == pid) {
-                            return json!({ "ok": false, "error": format!("Parent list '{}' not found in project", pid) });
+                    if let Some(ref pid) = parent_id {
+                        if !proj.milestones.iter().any(|m| &m.id == pid) {
+                            return json!({ "ok": false, "error": format!("Parent milestone/list '{}' not found in project", pid) });
                         }
                     }
-                    let created = crate::types::ProjectList {
-                        id: format!("plist-{}", Utc::now().timestamp_millis()),
+                    let created = Milestone {
+                        id: format!("ms-{}", Utc::now().timestamp_millis()),
                         title,
-                        parent_list_id,
-                        created_at: Utc::now().to_rfc3339(),
+                        done: false,
+                        parent_id,
+                        required_task_ids: Vec::new(),
                     };
-                    proj.lists.push(created.clone());
+                    proj.milestones.push(created.clone());
                     let updated_proj = proj.clone();
                     if dry_run {
                         return json!({ "ok": true, "dryRun": true, "previewList": created, "previewProject": updated_proj });
@@ -1906,31 +1926,31 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                     state.store.save_projects(projects);
                     rebuild_tray_menu(app);
                     let _ = app.emit("data:updated", ());
-                    json!({ "ok": true, "list": created, "project": updated_proj, "previousProject": previous_project })
+                    json!({ "ok": true, "list": created, "milestone": created, "project": updated_proj, "previousProject": previous_project })
                 }
                 "rename" | "move" => {
-                    let lid = args.get("list_id").and_then(|v| v.as_str());
-                    let lmatch = args.get("list_title").and_then(|v| v.as_str());
-                    let lidx = match pick_unique(&proj.lists, lid, lmatch, |l| l.id.clone(), |l| l.title.clone(), "project list") {
+                    let lid = args.get("list_id").or_else(|| args.get("milestone_id")).and_then(|v| v.as_str());
+                    let lmatch = args.get("list_title").or_else(|| args.get("milestone_title")).and_then(|v| v.as_str());
+                    let lidx = match pick_unique(&proj.milestones, lid, lmatch, |m| m.id.clone(), |m| m.title.clone(), "milestone") {
                         Ok(i) => i,
                         Err(e) => return e,
                     };
                     if let Some(nt) = args.get("new_title").or_else(|| args.get("list_title")).and_then(|v| v.as_str()) {
                         if list_act == "rename" && !nt.trim().is_empty() {
-                            proj.lists[lidx].title = nt.trim().to_string();
+                            proj.milestones[lidx].title = nt.trim().to_string();
                         }
                     }
-                    if let Some(pv) = args.get("parent_list_id") {
+                    if let Some(pv) = args.get("parent_list_id").or_else(|| args.get("parent_milestone_id")) {
                         let next_pid = match pv {
                             Value::Null => None,
                             Value::String(s) if s.trim().is_empty() => None,
                             Value::String(s) => Some(s.trim().to_string()),
                             _ => None,
                         };
-                        if next_pid.as_deref() == Some(proj.lists[lidx].id.as_str()) {
-                            return json!({ "ok": false, "error": "A list cannot be its own parent" });
+                        if next_pid.as_deref() == Some(proj.milestones[lidx].id.as_str()) {
+                            return json!({ "ok": false, "error": "A milestone/list cannot be its own parent" });
                         }
-                        proj.lists[lidx].parent_list_id = next_pid;
+                        proj.milestones[lidx].parent_id = next_pid;
                     }
                     let updated_proj = proj.clone();
                     if dry_run {
@@ -1942,16 +1962,16 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                     json!({ "ok": true, "project": updated_proj, "previousProject": previous_project })
                 }
                 "delete" => {
-                    let lid = args.get("list_id").and_then(|v| v.as_str());
-                    let lmatch = args.get("list_title").and_then(|v| v.as_str());
-                    let lidx = match pick_unique(&proj.lists, lid, lmatch, |l| l.id.clone(), |l| l.title.clone(), "project list") {
+                    let lid = args.get("list_id").or_else(|| args.get("milestone_id")).and_then(|v| v.as_str());
+                    let lmatch = args.get("list_title").or_else(|| args.get("milestone_title")).and_then(|v| v.as_str());
+                    let lidx = match pick_unique(&proj.milestones, lid, lmatch, |m| m.id.clone(), |m| m.title.clone(), "milestone") {
                         Ok(i) => i,
                         Err(e) => return e,
                     };
-                    let removed = proj.lists.remove(lidx);
-                    for l in &mut proj.lists {
-                        if l.parent_list_id.as_deref() == Some(removed.id.as_str()) {
-                            l.parent_list_id = removed.parent_list_id.clone();
+                    let removed = proj.milestones.remove(lidx);
+                    for m in &mut proj.milestones {
+                        if m.parent_id.as_deref() == Some(removed.id.as_str()) {
+                            m.parent_id = removed.parent_id.clone();
                         }
                     }
                     let updated_proj = proj.clone();
@@ -2648,10 +2668,17 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                     let Some(t) = ms_title.map(str::trim).filter(|s| !s.is_empty()) else {
                         return json!({ "ok": false, "error": "Provide 'milestone_title' to add" });
                     };
+                    let parent_id = args
+                        .get("parent_milestone_id")
+                        .or_else(|| args.get("parent_list_id"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty());
                     projects[idx].milestones.push(Milestone {
                         id: format!("ms-{}", Utc::now().timestamp_millis()),
                         title: t.to_string(),
                         done: false,
+                        parent_id,
                         required_task_ids: args
                             .get("required_task_ids")
                             .and_then(|v| v.as_array())
@@ -2699,10 +2726,44 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                         Ok(i) => i,
                         Err(e) => return e,
                     };
-                    projects[idx].milestones.remove(midx);
+                    let removed = projects[idx].milestones.remove(midx);
+                    for m in &mut projects[idx].milestones {
+                        if m.parent_id.as_deref() == Some(removed.id.as_str()) {
+                            m.parent_id = removed.parent_id.clone();
+                        }
+                    }
+                }
+                "rename" | "move" => {
+                    let midx = match pick_unique(
+                        &projects[idx].milestones,
+                        ms_id,
+                        ms_title,
+                        |m| m.id.clone(),
+                        |m| m.title.clone(),
+                        "milestone",
+                    ) {
+                        Ok(i) => i,
+                        Err(e) => return e,
+                    };
+                    if let Some(nt) = args.get("new_title").or_else(|| args.get("list_title")).and_then(|v| v.as_str()) {
+                        if action == "rename" && !nt.trim().is_empty() {
+                            projects[idx].milestones[midx].title = nt.trim().to_string();
+                        }
+                    }
+                    if let Some(pv) = args.get("parent_milestone_id").or_else(|| args.get("parent_list_id")) {
+                        let next_pid = match pv {
+                            Value::Null => None,
+                            Value::String(s) if s.trim().is_empty() => None,
+                            Value::String(s) => Some(s.trim().to_string()),
+                            _ => None,
+                        };
+                        if next_pid.as_deref() != Some(projects[idx].milestones[midx].id.as_str()) {
+                            projects[idx].milestones[midx].parent_id = next_pid;
+                        }
+                    }
                 }
                 _ => {
-                    return json!({ "ok": false, "error": "Unknown action (use add, toggle, or remove)" });
+                    return json!({ "ok": false, "error": "Unknown action (use add, toggle, rename, move, or remove)" });
                 }
             }
             let updated_project = projects[idx].clone();

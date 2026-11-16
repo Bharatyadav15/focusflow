@@ -113,12 +113,11 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [rangeEvents, setRangeEvents] = useState<CalendarEvent[]>(events);
-  const [newListTitle, setNewListTitle] = useState('');
   const [sublistParentId, setSublistParentId] = useState<string | null>(null);
   const [sublistTitle, setSublistTitle] = useState('');
   const [renamingListId, setRenamingListId] = useState<string | null>(null);
   const [renameListTitle, setRenameListTitle] = useState('');
-  const [expandedLists, setExpandedLists] = useState<Set<string>>(() => new Set());
+  const [collapsedMilestones, setCollapsedMilestones] = useState<Set<string>>(() => new Set());
   const [detailTarget, setDetailTarget] = useState<DetailModalTarget | null>(null);
   const [addingEntryListId, setAddingEntryListId] = useState<string | null>(null);
   const [entryKind, setEntryKind] = useState<'task' | 'event'>('task');
@@ -137,9 +136,9 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
     if (!fetchEventsForRange) return;
     const now = new Date();
     const min = new Date(now);
-    min.setDate(min.getDate() - 7);
+    min.setDate(min.getDate() - 30);
     const max = new Date(now);
-    max.setDate(max.getDate() + 30);
+    max.setDate(max.getDate() + 90);
     fetchEventsForRange(min.toISOString(), max.toISOString())
       .then((evts) => {
         if (evts.length > 0) setRangeEvents(evts);
@@ -204,97 +203,76 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
     [activeProject, enrichedEvents]
   );
 
-  const flattenedLists = useMemo(() => {
-    const lists = activeProject?.lists ?? [];
-    const byParent = new Map<string | undefined, ProjectList[]>();
-    for (const l of lists) {
-      const pid = l.parentListId && lists.some((x) => x.id === l.parentListId) ? l.parentListId : undefined;
+  type MilestoneNode = Project['milestones'][number];
+
+  const unifiedMilestones = useMemo<MilestoneNode[]>(() => {
+    if (!activeProject) return [];
+    const base = [...activeProject.milestones];
+    const seen = new Set(base.map((m) => m.id));
+    for (const l of activeProject.lists ?? []) {
+      if (!seen.has(l.id)) {
+        seen.add(l.id);
+        base.push({
+          id: l.id,
+          title: l.title,
+          done: false,
+          parentId: l.parentListId,
+        });
+      }
+    }
+    return base;
+  }, [activeProject]);
+
+  const flattenedMilestones = useMemo(() => {
+    const byParent = new Map<string | undefined, MilestoneNode[]>();
+    for (const m of unifiedMilestones) {
+      const pid = m.parentId && unifiedMilestones.some((x) => x.id === m.parentId) ? m.parentId : undefined;
       const arr = byParent.get(pid) ?? [];
-      arr.push(l);
+      arr.push(m);
       byParent.set(pid, arr);
     }
-    const out: { list: ProjectList; depth: number; hasChildren: boolean }[] = [];
+    const out: { milestone: MilestoneNode; depth: number; hasChildren: boolean }[] = [];
     const walk = (pid: string | undefined, depth: number) => {
-      for (const l of byParent.get(pid) ?? []) {
-        const kids = byParent.get(l.id) ?? [];
-        out.push({ list: l, depth, hasChildren: kids.length > 0 });
-        if (kids.length > 0 && expandedLists.has(l.id)) {
-          walk(l.id, depth + 1);
+      for (const m of byParent.get(pid) ?? []) {
+        const kids = byParent.get(m.id) ?? [];
+        out.push({ milestone: m, depth, hasChildren: kids.length > 0 });
+        if (kids.length > 0 && !collapsedMilestones.has(m.id)) {
+          walk(m.id, depth + 1);
         }
       }
     };
     walk(undefined, 0);
     return out;
-  }, [activeProject?.lists, expandedLists]);
+  }, [unifiedMilestones, collapsedMilestones]);
 
-  const handleAddProjectList = (e: React.FormEvent, parentListId?: string) => {
-    e.preventDefault();
-    if (!activeProject) return;
-    const title = (parentListId ? sublistTitle : newListTitle).trim();
-    if (!title) return;
-    const created: ProjectList = {
-      id: `plist-${Date.now()}`,
-      title,
-      parentListId,
-      createdAt: new Date().toISOString(),
-    };
-    onSaveProjects(
-      projects.map((p) =>
-        p.id === activeProject.id ? { ...p, lists: [...(p.lists ?? []), created] } : p
-      )
-    );
-    if (parentListId) {
-      setExpandedLists((prev) => new Set(prev).add(parentListId));
-      setSublistParentId(null);
-      setSublistTitle('');
-    } else {
-      setNewListTitle('');
-    }
-  };
-
-  const handleRenameProjectList = (listId: string) => {
+  const handleRenameMilestone = (milestoneId: string) => {
     if (!activeProject || !renameListTitle.trim()) {
       setRenamingListId(null);
       return;
     }
+    const nextTitle = renameListTitle.trim();
     onSaveProjects(
-      projects.map((p) =>
-        p.id === activeProject.id
-          ? {
-              ...p,
-              lists: (p.lists ?? []).map((l) =>
-                l.id === listId ? { ...l, title: renameListTitle.trim() } : l
-              ),
-            }
-          : p
-      )
+      projects.map((p) => {
+        if (p.id !== activeProject.id) return p;
+        const inMilestones = p.milestones.some((m) => m.id === milestoneId);
+        return {
+          ...p,
+          milestones: inMilestones
+            ? p.milestones.map((m) => (m.id === milestoneId ? { ...m, title: nextTitle } : m))
+            : [
+                ...p.milestones,
+                { id: milestoneId, title: nextTitle, done: false },
+              ],
+          lists: (p.lists ?? []).map((l) =>
+            l.id === milestoneId ? { ...l, title: nextTitle } : l
+          ),
+        };
+      })
     );
     setRenamingListId(null);
   };
 
-  const handleDeleteProjectList = (listId: string) => {
-    if (!activeProject) return;
-    const target = (activeProject.lists ?? []).find((l) => l.id === listId);
-    onSaveProjects(
-      projects.map((p) =>
-        p.id === activeProject.id
-          ? {
-              ...p,
-              lists: (p.lists ?? [])
-                .filter((l) => l.id !== listId)
-                .map((l) =>
-                  l.parentListId === listId ? { ...l, parentListId: target?.parentListId } : l
-                ),
-            }
-          : p
-      )
-    );
-    onSaveTasks(
-      tasks.map((t) => (t.projectListId === listId ? { ...t, projectListId: undefined } : t))
-    );
-  };
-
-  const handleAddEntryToList = async (e: React.FormEvent, listId: string) => {
+  const handleAddEntryToMilestone = async (e: React.FormEvent, milestoneId: string) => {
     e.preventDefault();
     if (!activeProject || !entryTitle.trim()) return;
     if (entryKind === 'task') {
@@ -302,7 +280,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
         id: `task-${Date.now()}`,
         title: entryTitle.trim(),
         projectId: activeProject.id,
-        projectListId: listId,
+        projectListId: milestoneId,
         priority: entryPriority,
         completed: false,
         estimatedPomodoros: 1,
@@ -319,7 +297,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
         endIso,
         priority: entryPriority,
         projectId: activeProject.id,
-        projectListId: listId,
+        projectListId: milestoneId,
       });
     }
     setEntryTitle('');
@@ -360,22 +338,38 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
     setNewTaskDuration('');
   };
 
-  const handleAddMilestone = (e: React.FormEvent) => {
+  const handleAddMilestone = (e: React.FormEvent, parentId?: string) => {
     e.preventDefault();
-    if (!newMilestone.trim() || !activeProject) return;
+    const title = (parentId ? sublistTitle : newMilestone).trim();
+    if (!title || !activeProject) return;
     const updated = projects.map((p) =>
       p.id === activeProject.id
         ? {
             ...p,
             milestones: [
               ...p.milestones,
-              { id: `m-${Date.now()}`, title: newMilestone.trim(), done: false },
+              {
+                id: `m-${Date.now()}`,
+                title,
+                done: false,
+                ...(parentId ? { parentId } : {}),
+              },
             ],
           }
         : p
     );
     onSaveProjects(updated);
-    setNewMilestone('');
+    if (parentId) {
+      setCollapsedMilestones((prev) => {
+        const next = new Set(prev);
+        next.delete(parentId);
+        return next;
+      });
+      setSublistParentId(null);
+      setSublistTitle('');
+    } else {
+      setNewMilestone('');
+    }
   };
 
   const toggleMilestone = (milestoneId: string) => {
@@ -419,15 +413,30 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
 
   const deleteMilestone = (milestoneId: string) => {
     if (!activeProject) return;
+    const target = unifiedMilestones.find((m) => m.id === milestoneId);
     const updated = projects.map((p) =>
       p.id === activeProject.id
         ? {
             ...p,
-            milestones: p.milestones.filter((m) => m.id !== milestoneId),
+            milestones: p.milestones
+              .filter((m) => m.id !== milestoneId)
+              .map((m) =>
+                m.parentId === milestoneId ? { ...m, parentId: target?.parentId } : m
+              ),
+            lists: (p.lists ?? [])
+              .filter((l) => l.id !== milestoneId)
+              .map((l) =>
+                l.parentListId === milestoneId ? { ...l, parentListId: target?.parentId } : l
+              ),
           }
         : p
     );
     onSaveProjects(updated);
+    if (tasks.some((t) => t.projectListId === milestoneId)) {
+      onSaveTasks(
+        tasks.map((t) => (t.projectListId === milestoneId ? { ...t, projectListId: undefined } : t))
+      );
+    }
   };
 
   const startEditingProject = (p: Project) => {
@@ -645,198 +654,58 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                 </form>
               )}
 
-              <form onSubmit={handleAddMilestone} className="flex gap-2 mb-3">
+              <form onSubmit={(e) => handleAddMilestone(e)} className="flex gap-2 mb-3">
                 <input
                   type="text"
                   value={newMilestone}
                   onChange={(e) => setNewMilestone(e.target.value)}
-                  placeholder="Add milestone..."
+                  placeholder="Add milestone / list..."
                   className="flex-1 rounded-xl bg-surface-900 border border-surface-600 px-3 py-1.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500"
                 />
                 <button
                   type="submit"
-                  className="px-3 py-1.5 rounded-xl bg-surface-700 hover:bg-surface-600 text-xs font-medium text-slate-200"
+                  className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-indigo-500 hover:bg-indigo-400 text-xs font-medium text-white"
                 >
-                  Add
+                  <Plus className="w-3.5 h-3.5" /> Add Milestone
                 </button>
               </form>
 
-              <div className="space-y-1.5">
-                {activeProject.milestones.map((m) => {
-                  const reqIds = m.requiredTaskIds ?? [];
-                  const isGated = reqIds.length > 0;
-                  const doneCount = reqIds.filter((tid) =>
-                    tasks.find((t) => t.id === tid)?.completed
-                  ).length;
-
-                  return (
-                    <div
-                      key={m.id}
-                      className="rounded-lg hover:bg-surface-700/40 transition p-2 space-y-2"
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <button
-                          type="button"
-                          onClick={() => toggleMilestone(m.id)}
-                          disabled={isGated}
-                          className={`flex items-center gap-2.5 text-left flex-1 min-w-0 ${
-                            isGated ? 'cursor-not-allowed' : ''
-                          }`}
-                          title={
-                            isGated
-                              ? `Auto-completed when all ${reqIds.length} linked task(s) finish`
-                              : 'Toggle milestone'
-                          }
-                        >
-                          {m.done ? (
-                            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                          ) : isGated ? (
-                            <Lock className="w-4 h-4 text-amber-400 shrink-0" />
-                          ) : (
-                            <Circle className="w-4 h-4 text-slate-400 shrink-0" />
-                          )}
-                          <span
-                            className={`text-sm truncate ${
-                              m.done
-                                ? 'line-through text-slate-500'
-                                : 'text-slate-200'
-                            }`}
-                          >
-                            {m.title}
-                          </span>
-                          {isGated && (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 shrink-0">
-                              Gated: {doneCount}/{reqIds.length} tasks
-                            </span>
-                          )}
-                        </button>
-                        <div className="flex items-center gap-1 shrink-0">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setGatingMilestoneId(
-                                gatingMilestoneId === m.id ? null : m.id
-                              )
-                            }
-                            className={`px-2 py-0.5 rounded text-[11px] flex items-center gap-1 transition ${
-                              gatingMilestoneId === m.id || isGated
-                                ? 'bg-indigo-500/20 text-indigo-300'
-                                : 'bg-surface-700 text-slate-400 hover:text-slate-200'
-                            }`}
-                            title="Link tasks that must be completed for this milestone"
-                          >
-                            <Lock className="w-3 h-3" />
-                            Gate
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => deleteMilestone(m.id)}
-                            className="p-1 text-slate-500 hover:text-rose-400 shrink-0"
-                            title="Delete milestone"
-                          >
-                            <X className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </div>
-
-                      {gatingMilestoneId === m.id && (
-                        <div className="pl-6 pt-1 border-t border-surface-700/70 space-y-1">
-                          <div className="text-[11px] text-slate-400">
-                            Select project tasks required to unlock this milestone:
-                          </div>
-                          {projectTasks.length === 0 ? (
-                            <div className="text-[11px] text-slate-500">
-                              Add tasks to this project below first.
-                            </div>
-                          ) : (
-                            <div className="flex flex-wrap gap-1.5">
-                              {projectTasks.map((pt) => {
-                                const linked = reqIds.includes(pt.id);
-                                return (
-                                  <button
-                                    key={pt.id}
-                                    type="button"
-                                    onClick={() =>
-                                      toggleMilestoneGateTask(m.id, pt.id)
-                                    }
-                                    className={`text-[11px] px-2 py-0.5 rounded-full border transition ${
-                                      linked
-                                        ? 'bg-indigo-500/25 border-indigo-400 text-indigo-200'
-                                        : 'bg-surface-900 border-surface-600 text-slate-400 hover:text-slate-200'
-                                    }`}
-                                  >
-                                    {pt.completed ? '✓ ' : ''}
-                                    {pt.title}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Project Lists & Sublists (Mixed Tasks + Calendar Events) */}
-            <div className="rounded-2xl bg-surface-800 border border-surface-600/70 p-5 space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <h3 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
-                  <ListPlus className="w-4 h-4 text-indigo-400" />
-                  Lists &amp; Sublists ({(activeProject.lists ?? []).length})
-                </h3>
-                <form
-                  onSubmit={(e) => handleAddProjectList(e)}
-                  className="flex items-center gap-2"
-                >
-                  <input
-                    type="text"
-                    value={newListTitle}
-                    onChange={(e) => setNewListTitle(e.target.value)}
-                    placeholder="New list name..."
-                    className="rounded-xl bg-surface-900 border border-surface-600 px-3 py-1.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500"
-                  />
-                  <button
-                    type="submit"
-                    className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-indigo-500 hover:bg-indigo-400 text-xs font-medium text-white"
-                  >
-                    <Plus className="w-3.5 h-3.5" /> Add List
-                  </button>
-                </form>
-              </div>
-
-              {flattenedLists.length === 0 ? (
+              {flattenedMilestones.length === 0 ? (
                 <p className="text-xs text-slate-500 py-2">
-                  No lists yet. Create a list above to organize tasks and calendar events into sections and sublists.
+                  No milestones yet. Add a milestone above to organize sublists, tasks, and calendar events.
                 </p>
               ) : (
-                <div className="space-y-3">
-                  {flattenedLists.map(({ list, depth, hasChildren }) => {
-                    const listTasks = projectTasks.filter((t) => t.projectListId === list.id);
-                    const listEvents = projectEvents.filter((e) => e.projectListId === list.id);
-                    const isExpanded = expandedLists.has(list.id);
+                <div className="space-y-2.5">
+                  {flattenedMilestones.map(({ milestone: m, depth, hasChildren }) => {
+                    const reqIds = m.requiredTaskIds ?? [];
+                    const isGated = reqIds.length > 0;
+                    const doneCount = reqIds.filter((tid) =>
+                      tasks.find((t) => t.id === tid)?.completed
+                    ).length;
+                    const listTasks = projectTasks.filter((t) => t.projectListId === m.id);
+                    const listEvents = projectEvents.filter((e) => e.projectListId === m.id);
+                    const isExpanded = !collapsedMilestones.has(m.id);
 
                     return (
                       <div
-                        key={list.id}
+                        key={m.id}
                         style={{ marginLeft: depth * 20 }}
-                        className="rounded-xl bg-surface-900/60 border border-surface-700/80 p-3.5 space-y-2.5"
+                        className="rounded-xl bg-surface-900/60 border border-surface-700/80 p-3 space-y-2"
                       >
                         <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div className="flex items-center gap-2 min-w-0">
+                          <div className="flex items-center gap-2 flex-1 min-w-0">
                             {hasChildren ? (
                               <button
+                                type="button"
                                 onClick={() =>
-                                  setExpandedLists((prev) => {
+                                  setCollapsedMilestones((prev) => {
                                     const next = new Set(prev);
-                                    if (next.has(list.id)) next.delete(list.id);
-                                    else next.add(list.id);
+                                    if (next.has(m.id)) next.delete(m.id);
+                                    else next.add(m.id);
                                     return next;
                                   })
                                 }
-                                className="text-slate-400 hover:text-slate-200"
+                                className="text-slate-400 hover:text-slate-200 shrink-0"
                               >
                                 {isExpanded ? (
                                   <ChevronDown className="w-4 h-4" />
@@ -845,13 +714,34 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                                 )}
                               </button>
                             ) : (
-                              <span className="w-4" />
+                              <span className="w-4 shrink-0" />
                             )}
-                            {renamingListId === list.id ? (
+                            <button
+                              type="button"
+                              onClick={() => toggleMilestone(m.id)}
+                              disabled={isGated}
+                              className={`shrink-0 ${
+                                isGated ? 'cursor-not-allowed' : ''
+                              }`}
+                              title={
+                                isGated
+                                  ? `Auto-completed when all ${reqIds.length} linked task(s) finish`
+                                  : 'Toggle milestone'
+                              }
+                            >
+                              {m.done ? (
+                                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                              ) : isGated ? (
+                                <Lock className="w-4 h-4 text-amber-400" />
+                              ) : (
+                                <Circle className="w-4 h-4 text-slate-400" />
+                              )}
+                            </button>
+                            {renamingListId === m.id ? (
                               <form
                                 onSubmit={(e) => {
                                   e.preventDefault();
-                                  handleRenameProjectList(list.id);
+                                  handleRenameMilestone(m.id);
                                 }}
                                 className="flex items-center gap-1.5"
                               >
@@ -869,20 +759,31 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                                 </button>
                               </form>
                             ) : (
-                              <span className="text-sm font-semibold text-slate-100">
-                                {list.title}
+                              <span
+                                className={`text-sm font-semibold truncate ${
+                                  m.done
+                                    ? 'line-through text-slate-500'
+                                    : 'text-slate-100'
+                                }`}
+                              >
+                                {m.title}
                               </span>
                             )}
-                            <span className="text-[11px] text-slate-400">
+                            <span className="text-[11px] text-slate-400 shrink-0">
                               {listTasks.length} tasks · {listEvents.length} events
                             </span>
+                            {isGated && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 shrink-0">
+                                Gated: {doneCount}/{reqIds.length} tasks
+                              </span>
+                            )}
                           </div>
-
-                          <div className="flex flex-wrap items-center gap-1.5">
+                          <div className="flex flex-wrap items-center gap-1.5 shrink-0">
                             {depth < 2 && (
                               <button
+                                type="button"
                                 onClick={() => {
-                                  setSublistParentId(sublistParentId === list.id ? null : list.id);
+                                  setSublistParentId(sublistParentId === m.id ? null : m.id);
                                   setSublistTitle('');
                                 }}
                                 className="px-2 py-1 rounded-lg bg-surface-800 hover:bg-surface-700 text-[11px] text-slate-300"
@@ -891,8 +792,9 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                               </button>
                             )}
                             <button
+                              type="button"
                               onClick={() => {
-                                setAddingEntryListId(addingEntryListId === list.id ? null : list.id);
+                                setAddingEntryListId(addingEntryListId === m.id ? null : m.id);
                                 setEntryKind('task');
                                 setEntryTitle('');
                               }}
@@ -901,35 +803,54 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                               + Entry
                             </button>
                             <button
+                              type="button"
+                              onClick={() =>
+                                setGatingMilestoneId(
+                                  gatingMilestoneId === m.id ? null : m.id
+                                )
+                              }
+                              className={`px-2 py-1 rounded-lg text-[11px] flex items-center gap-1 transition ${
+                                gatingMilestoneId === m.id || isGated
+                                  ? 'bg-indigo-500/20 text-indigo-300'
+                                  : 'bg-surface-800 text-slate-400 hover:text-slate-200'
+                              }`}
+                              title="Link tasks that must be completed for this milestone"
+                            >
+                              <Lock className="w-3 h-3" />
+                              Gate
+                            </button>
+                            <button
+                              type="button"
                               onClick={() => {
-                                setRenamingListId(list.id);
-                                setRenameListTitle(list.title);
+                                setRenamingListId(m.id);
+                                setRenameListTitle(m.title);
                               }}
                               className="p-1 text-slate-400 hover:text-slate-200"
-                              title="Rename list"
+                              title="Rename milestone"
                             >
                               <Pencil className="w-3.5 h-3.5" />
                             </button>
                             <button
-                              onClick={() => handleDeleteProjectList(list.id)}
+                              type="button"
+                              onClick={() => deleteMilestone(m.id)}
                               className="p-1 text-slate-500 hover:text-rose-400"
-                              title="Delete list"
+                              title="Delete milestone"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>
                           </div>
                         </div>
 
-                        {sublistParentId === list.id && (
+                        {sublistParentId === m.id && (
                           <form
-                            onSubmit={(e) => handleAddProjectList(e, list.id)}
+                            onSubmit={(e) => handleAddMilestone(e, m.id)}
                             className="flex items-center gap-2 pl-6"
                           >
                             <input
                               autoFocus
                               value={sublistTitle}
                               onChange={(e) => setSublistTitle(e.target.value)}
-                              placeholder={`New sublist under "${list.title}"...`}
+                              placeholder={`New sublist under "${m.title}"...`}
                               className="flex-1 rounded-lg bg-surface-800 border border-surface-600 px-2.5 py-1 text-xs text-slate-100"
                             />
                             <button
@@ -941,9 +862,9 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                           </form>
                         )}
 
-                        {addingEntryListId === list.id && (
+                        {addingEntryListId === m.id && (
                           <form
-                            onSubmit={(e) => handleAddEntryToList(e, list.id)}
+                            onSubmit={(e) => handleAddEntryToMilestone(e, m.id)}
                             className="flex flex-wrap items-center gap-2 p-2.5 rounded-xl bg-surface-800 border border-surface-600"
                           >
                             <select
@@ -1005,8 +926,43 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                           </form>
                         )}
 
-                        {/* Link an existing Calendar Event into this list */}
-                        {onSetEventMetadata && enrichedEvents.some((e) => e.projectListId !== list.id) && (
+                        {gatingMilestoneId === m.id && (
+                          <div className="pl-6 pt-1 border-t border-surface-700/70 space-y-1">
+                            <div className="text-[11px] text-slate-400">
+                              Select project tasks required to unlock this milestone:
+                            </div>
+                            {projectTasks.length === 0 ? (
+                              <div className="text-[11px] text-slate-500">
+                                Add tasks to this project below first.
+                              </div>
+                            ) : (
+                              <div className="flex flex-wrap gap-1.5">
+                                {projectTasks.map((pt) => {
+                                  const linked = reqIds.includes(pt.id);
+                                  return (
+                                    <button
+                                      key={pt.id}
+                                      type="button"
+                                      onClick={() =>
+                                        toggleMilestoneGateTask(m.id, pt.id)
+                                      }
+                                      className={`text-[11px] px-2 py-0.5 rounded-full border transition ${
+                                        linked
+                                          ? 'bg-indigo-500/25 border-indigo-400 text-indigo-200'
+                                          : 'bg-surface-900 border-surface-600 text-slate-400 hover:text-slate-200'
+                                      }`}
+                                    >
+                                      {pt.completed ? '✓ ' : ''}
+                                      {pt.title}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {onSetEventMetadata && enrichedEvents.some((e) => e.projectListId !== m.id) && (
                           <div className="flex items-center gap-2 pl-6">
                             <select
                               value=""
@@ -1015,14 +971,14 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                                 onSetEventMetadata(e.target.value, {
                                   ...(eventMetadata[e.target.value] ?? {}),
                                   projectId: activeProject.id,
-                                  projectListId: list.id,
+                                  projectListId: m.id,
                                 });
                               }}
                               className="rounded-lg bg-surface-800 border border-surface-700 px-2 py-1 text-[11px] text-slate-300"
                             >
-                              <option value="">+ Assign existing calendar event to this list...</option>
+                              <option value="">+ Assign existing calendar event to this milestone...</option>
                               {enrichedEvents
-                                .filter((ev) => ev.projectListId !== list.id)
+                                .filter((ev) => ev.projectListId !== m.id)
                                 .map((ev) => (
                                   <option key={ev.id} value={ev.id}>
                                     {ev.isAllDay ? extractYmd(ev.start) : `${extractYmd(ev.start)} ${formatTime(ev.start)}`} · {ev.summary}
@@ -1032,166 +988,167 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                           </div>
                         )}
 
-                        {/* Mixed entries inside this list */}
-                        <div className="space-y-1.5 pl-4">
-                          {listEvents.map((evt) => {
-                            const pMeta = getPriorityMeta(evt.priority);
-                            return (
-                              <div
-                                key={evt.id}
-                                onClick={() => setDetailTarget({ kind: 'event', event: evt })}
-                                className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-surface-800/80 border border-surface-700 hover:border-indigo-500/50 cursor-pointer"
-                              >
-                                <div className="flex items-center gap-2 min-w-0">
-                                  <Calendar className="w-3.5 h-3.5 text-sky-400 shrink-0" />
-                                  <span className="text-[11px] text-sky-300 shrink-0">
-                                    {evt.isAllDay ? extractYmd(evt.start) : `${extractYmd(evt.start).slice(5)} ${formatTime(evt.start)}`}
-                                  </span>
-                                  <span className="text-xs font-medium text-slate-100 truncate">
-                                    {evt.summary}
-                                  </span>
-                                  {evt.linkedTaskId && (
-                                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 flex items-center gap-1 shrink-0">
-                                      <Link2 className="w-2.5 h-2.5" /> Linked
+                        {(listEvents.length > 0 || listTasks.length > 0) && (
+                          <div className="space-y-1.5 pl-4">
+                            {listEvents.map((evt) => {
+                              const pMeta = getPriorityMeta(evt.priority);
+                              return (
+                                <div
+                                  key={evt.id}
+                                  onClick={() => setDetailTarget({ kind: 'event', event: evt })}
+                                  className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-surface-800/80 border border-surface-700 hover:border-indigo-500/50 cursor-pointer"
+                                >
+                                  <div className="flex items-center gap-2 min-w-0">
+                                    <Calendar className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                                    <span className="text-[11px] text-sky-300 shrink-0">
+                                      {evt.isAllDay ? extractYmd(evt.start) : `${extractYmd(evt.start).slice(5)} ${formatTime(evt.start)}`}
                                     </span>
-                                  )}
-                                </div>
-                                <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
-                                  {onSetEventMetadata && (
-                                    <select
-                                      value={evt.priority ?? 3}
-                                      onChange={(e) =>
-                                        onSetEventMetadata(evt.id, {
-                                          ...(eventMetadata[evt.id] ?? {}),
-                                          projectId: activeProject.id,
-                                          projectListId: list.id,
-                                          priority: Number(e.target.value) as Priority,
-                                        })
-                                      }
-                                      className={`text-[10px] px-1.5 py-0.5 rounded border bg-transparent font-semibold ${pMeta.badgeClass}`}
-                                    >
-                                      {PRIORITIES.map((p) => (
-                                        <option key={p.value} value={p.value} className="bg-surface-900">
-                                          {p.short}
-                                        </option>
-                                      ))}
-                                    </select>
-                                  )}
-                                  <button
-                                    onClick={() =>
-                                      onStartFocus({
-                                        type: 'event',
-                                        id: evt.id,
-                                        title: evt.summary,
-                                        calendarEventId: evt.id,
-                                        projectId: activeProject.id,
-                                      })
-                                    }
-                                    className="px-2 py-1 rounded bg-indigo-500/20 hover:bg-indigo-500 text-indigo-300 hover:text-white text-[11px]"
-                                  >
-                                    Focus
-                                  </button>
-                                  {onSetEventMetadata && (
-                                    <button
-                                      onClick={() =>
-                                        onSetEventMetadata(evt.id, {
-                                          ...(eventMetadata[evt.id] ?? {}),
-                                          projectListId: undefined,
-                                        })
-                                      }
-                                      className="p-1 text-slate-500 hover:text-rose-400"
-                                      title="Remove event from this list"
-                                    >
-                                      <X className="w-3.5 h-3.5" />
-                                    </button>
-                                  )}
-                                </div>
-                              </div>
-                            );
-                          })}
-                          {listTasks.map((t) => {
-                            const pMeta = getPriorityMeta(t.priority);
-                            return (
-                              <div
-                                key={t.id}
-                                onClick={() => setDetailTarget({ kind: 'task', task: t })}
-                                className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-surface-800/80 border border-surface-700 hover:border-indigo-500/50 cursor-pointer"
-                              >
-                                <div className="flex items-center gap-2 min-w-0">
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      onToggleTask(t.id);
-                                    }}
-                                    className="text-slate-400 hover:text-indigo-400 shrink-0"
-                                  >
-                                    {t.completed ? (
-                                      <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                                    ) : (
-                                      <Circle className="w-4 h-4" />
+                                    <span className="text-xs font-medium text-slate-100 truncate">
+                                      {evt.summary}
+                                    </span>
+                                    {evt.linkedTaskId && (
+                                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 flex items-center gap-1 shrink-0">
+                                        <Link2 className="w-2.5 h-2.5" /> Linked
+                                      </span>
                                     )}
-                                  </button>
-                                  <span
-                                    className={`text-xs font-medium truncate ${
-                                      t.completed ? 'line-through text-slate-500' : 'text-slate-100'
-                                    }`}
-                                  >
-                                    {t.title}
-                                  </span>
-                                  {t.linkedEventId && (
-                                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 flex items-center gap-1 shrink-0">
-                                      <Link2 className="w-2.5 h-2.5" /> Linked
-                                    </span>
-                                  )}
-                                </div>
-                                <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
-                                  {onSetTaskMetadata && (
-                                    <select
-                                      value={t.priority ?? 3}
-                                      onChange={(e) =>
-                                        onSetTaskMetadata(t.id, {
-                                          priority: Number(e.target.value) as Priority,
-                                        })
-                                      }
-                                      className={`text-[10px] px-1.5 py-0.5 rounded border bg-transparent font-semibold ${pMeta.badgeClass}`}
-                                    >
-                                      {PRIORITIES.map((p) => (
-                                        <option key={p.value} value={p.value} className="bg-surface-900">
-                                          {p.short}
-                                        </option>
-                                      ))}
-                                    </select>
-                                  )}
-                                  {!t.completed && (
+                                  </div>
+                                  <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+                                    {onSetEventMetadata && (
+                                      <select
+                                        value={evt.priority ?? 3}
+                                        onChange={(e) =>
+                                          onSetEventMetadata(evt.id, {
+                                            ...(eventMetadata[evt.id] ?? {}),
+                                            projectId: activeProject.id,
+                                            projectListId: m.id,
+                                            priority: Number(e.target.value) as Priority,
+                                          })
+                                        }
+                                        className={`text-[10px] px-1.5 py-0.5 rounded border bg-transparent font-semibold ${pMeta.badgeClass}`}
+                                      >
+                                        {PRIORITIES.map((p) => (
+                                          <option key={p.value} value={p.value} className="bg-surface-900">
+                                            {p.short}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    )}
                                     <button
                                       onClick={() =>
                                         onStartFocus({
-                                          type: 'task',
-                                          id: t.id,
-                                          title: t.title,
+                                          type: 'event',
+                                          id: evt.id,
+                                          title: evt.summary,
+                                          calendarEventId: evt.id,
                                           projectId: activeProject.id,
-                                          durationMinutes: t.durationMinutes,
                                         })
                                       }
                                       className="px-2 py-1 rounded bg-indigo-500/20 hover:bg-indigo-500 text-indigo-300 hover:text-white text-[11px]"
                                     >
                                       Focus
                                     </button>
-                                  )}
-                                  {onDeleteTask && (
-                                    <button
-                                      onClick={() => onDeleteTask(t)}
-                                      className="p-1 text-slate-500 hover:text-rose-400"
-                                      title="Delete task"
-                                    >
-                                      <Trash2 className="w-3.5 h-3.5" />
-                                    </button>
-                                  )}
+                                    {onSetEventMetadata && (
+                                      <button
+                                        onClick={() =>
+                                          onSetEventMetadata(evt.id, {
+                                            ...(eventMetadata[evt.id] ?? {}),
+                                            projectListId: undefined,
+                                          })
+                                        }
+                                        className="p-1 text-slate-500 hover:text-rose-400"
+                                        title="Remove event from this milestone"
+                                      >
+                                        <X className="w-3.5 h-3.5" />
+                                      </button>
+                                    )}
+                                  </div>
                                 </div>
-                              </div>
-                            );
-                          })}
-                        </div>
+                              );
+                            })}
+                            {listTasks.map((t) => {
+                              const pMeta = getPriorityMeta(t.priority);
+                              return (
+                                <div
+                                  key={t.id}
+                                  onClick={() => setDetailTarget({ kind: 'task', task: t })}
+                                  className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-surface-800/80 border border-surface-700 hover:border-indigo-500/50 cursor-pointer"
+                                >
+                                  <div className="flex items-center gap-2 min-w-0">
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        onToggleTask(t.id);
+                                      }}
+                                      className="text-slate-400 hover:text-indigo-400 shrink-0"
+                                    >
+                                      {t.completed ? (
+                                        <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                                      ) : (
+                                        <Circle className="w-4 h-4" />
+                                      )}
+                                    </button>
+                                    <span
+                                      className={`text-xs font-medium truncate ${
+                                        t.completed ? 'line-through text-slate-500' : 'text-slate-100'
+                                      }`}
+                                    >
+                                      {t.title}
+                                    </span>
+                                    {t.linkedEventId && (
+                                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 flex items-center gap-1 shrink-0">
+                                        <Link2 className="w-2.5 h-2.5" /> Linked
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+                                    {onSetTaskMetadata && (
+                                      <select
+                                        value={t.priority ?? 3}
+                                        onChange={(e) =>
+                                          onSetTaskMetadata(t.id, {
+                                            priority: Number(e.target.value) as Priority,
+                                          })
+                                        }
+                                        className={`text-[10px] px-1.5 py-0.5 rounded border bg-transparent font-semibold ${pMeta.badgeClass}`}
+                                      >
+                                        {PRIORITIES.map((p) => (
+                                          <option key={p.value} value={p.value} className="bg-surface-900">
+                                            {p.short}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    )}
+                                    {!t.completed && (
+                                      <button
+                                        onClick={() =>
+                                          onStartFocus({
+                                            type: 'task',
+                                            id: t.id,
+                                            title: t.title,
+                                            projectId: activeProject.id,
+                                            durationMinutes: t.durationMinutes,
+                                          })
+                                        }
+                                        className="px-2 py-1 rounded bg-indigo-500/20 hover:bg-indigo-500 text-indigo-300 hover:text-white text-[11px]"
+                                      >
+                                        Focus
+                                      </button>
+                                    )}
+                                    {onDeleteTask && (
+                                      <button
+                                        onClick={() => onDeleteTask(t)}
+                                        className="p-1 text-slate-500 hover:text-rose-400"
+                                        title="Delete task"
+                                      >
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -1199,7 +1156,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
               )}
             </div>
 
-            {/* Project Tasks */}
+            {/* Project Tasks & Calendar Events */}
             <div className="rounded-2xl bg-surface-800 border border-surface-600/70 p-5">
               <h3 className="text-sm font-semibold text-slate-200 mb-3">
                 Project Tasks
@@ -1390,7 +1347,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                           )}
                           {effDone}/{effEst} pomos
                           {hasChildren ? ` (${openChildCount}/${childCount} open)` : ''}
-                          {onSetTaskMetadata && (activeProject.lists ?? []).length > 0 && (
+                          {onSetTaskMetadata && unifiedMilestones.length > 0 && (
                             <select
                               value={task.projectListId ?? ''}
                               onChange={(e) =>
@@ -1399,12 +1356,12 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                                 })
                               }
                               className="px-1.5 py-0.5 rounded border border-surface-600 bg-transparent text-[10px] text-slate-300"
-                              title="Assign to project list/sublist"
+                              title="Assign to milestone / sublist"
                             >
-                              <option value="" className="bg-surface-900">No list</option>
-                              {flattenedLists.map(({ list, depth }) => (
-                                <option key={list.id} value={list.id} className="bg-surface-900">
-                                  {'— '.repeat(depth)}{list.title}
+                              <option value="" className="bg-surface-900">No milestone</option>
+                              {flattenedMilestones.map(({ milestone: m, depth }) => (
+                                <option key={m.id} value={m.id} className="bg-surface-900">
+                                  {'— '.repeat(depth)}{m.title}
                                 </option>
                               ))}
                             </select>
@@ -1514,6 +1471,128 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                     >
                       Close
                     </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Calendar Events in Project */}
+              <div className="mt-6 pt-5 border-t border-surface-700/70 space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                    <Calendar className="w-3.5 h-3.5 text-sky-400" />
+                    Calendar Events ({projectEvents.length})
+                  </h4>
+                </div>
+                {projectEvents.length === 0 ? (
+                  <p className="text-xs text-slate-500 py-2">
+                    No calendar events linked to this project yet.
+                  </p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {projectEvents.map((evt) => {
+                      const pMeta = getPriorityMeta(evt.priority);
+                      return (
+                        <div
+                          key={evt.id}
+                          onClick={() => setDetailTarget({ kind: 'event', event: evt })}
+                          className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 rounded-xl bg-surface-900/60 border border-surface-700/80 hover:border-indigo-500/50 cursor-pointer"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <Calendar className="w-4 h-4 text-sky-400 shrink-0" />
+                            <span className="text-[11px] text-sky-300 shrink-0">
+                              {evt.isAllDay
+                                ? extractYmd(evt.start)
+                                : `${extractYmd(evt.start)} ${formatTime(evt.start)}`}
+                            </span>
+                            <span className="text-xs font-medium text-slate-100 truncate">
+                              {evt.summary}
+                            </span>
+                            {evt.linkedTaskId && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 flex items-center gap-1 shrink-0">
+                                <Link2 className="w-2.5 h-2.5" /> Linked
+                              </span>
+                            )}
+                          </div>
+                          <div
+                            className="flex items-center gap-1.5 shrink-0"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {onSetEventMetadata && unifiedMilestones.length > 0 && (
+                              <select
+                                value={evt.projectListId ?? ''}
+                                onChange={(e) =>
+                                  onSetEventMetadata(evt.id, {
+                                    ...(eventMetadata[evt.id] ?? {}),
+                                    projectId: activeProject.id,
+                                    projectListId: e.target.value || undefined,
+                                  })
+                                }
+                                className="px-1.5 py-0.5 rounded border border-surface-600 bg-transparent text-[10px] text-slate-300"
+                                title="Assign to milestone / sublist"
+                              >
+                                <option value="" className="bg-surface-900">
+                                  No milestone
+                                </option>
+                                {flattenedMilestones.map(({ milestone: m, depth }) => (
+                                  <option key={m.id} value={m.id} className="bg-surface-900">
+                                    {'— '.repeat(depth)}
+                                    {m.title}
+                                  </option>
+                                ))}
+                              </select>
+                            )}
+                            {onSetEventMetadata && (
+                              <select
+                                value={evt.priority ?? 3}
+                                onChange={(e) =>
+                                  onSetEventMetadata(evt.id, {
+                                    ...(eventMetadata[evt.id] ?? {}),
+                                    projectId: activeProject.id,
+                                    priority: Number(e.target.value) as Priority,
+                                  })
+                                }
+                                className={`text-[10px] px-1.5 py-0.5 rounded border bg-transparent font-semibold ${pMeta.badgeClass}`}
+                              >
+                                {PRIORITIES.map((p) => (
+                                  <option key={p.value} value={p.value} className="bg-surface-900">
+                                    {p.short}
+                                  </option>
+                                ))}
+                              </select>
+                            )}
+                            <button
+                              onClick={() =>
+                                onStartFocus({
+                                  type: 'event',
+                                  id: evt.id,
+                                  title: evt.summary,
+                                  calendarEventId: evt.id,
+                                  projectId: activeProject.id,
+                                })
+                              }
+                              className="px-2 py-1 rounded bg-indigo-500/20 hover:bg-indigo-500 text-indigo-300 hover:text-white text-[11px]"
+                            >
+                              Focus
+                            </button>
+                            {onSetEventMetadata && (
+                              <button
+                                onClick={() =>
+                                  onSetEventMetadata(evt.id, {
+                                    ...(eventMetadata[evt.id] ?? {}),
+                                    projectId: undefined,
+                                    projectListId: undefined,
+                                  })
+                                }
+                                className="p-1 text-slate-500 hover:text-rose-400"
+                                title="Remove event from project"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>

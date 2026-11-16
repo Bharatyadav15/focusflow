@@ -7,6 +7,8 @@ pub struct Milestone {
     pub id: String,
     pub title: String,
     pub done: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub required_task_ids: Vec<String>,
 }
