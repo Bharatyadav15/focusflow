@@ -31,6 +31,7 @@ interface PlannerViewProps {
   projects?: Project[];
   sessions: PomodoroSession[];
   onToggleTask?: (taskId: string) => void;
+  onDeleteTask?: (task: TaskItem) => void;
   fetchEventsForRange: (
     timeMin: string,
     timeMax: string
@@ -81,6 +82,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
   projects = [],
   sessions,
   onToggleTask,
+  onDeleteTask,
   fetchEventsForRange,
   onStartFocus,
   onRescheduleTask,
@@ -1057,6 +1059,17 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                     >
                       <Play className="w-3 h-3" /> Focus
                     </button>
+                    {onToggleTask && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onToggleTask(t.id);
+                        }}
+                        className="px-2 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/30 text-emerald-300 text-xs font-medium"
+                      >
+                        {t.completed ? 'Reopen' : 'Done'}
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>
@@ -1074,6 +1087,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
         onClose={() => setDetailTarget(null)}
         onStartFocus={onStartFocus}
         onToggleTask={onToggleTask}
+        onDeleteTask={onDeleteTask}
         onTimeBlockTask={(task) => {
           onTimeBlockTask(task, selectedDayKey).then(() => loadRange());
         }}

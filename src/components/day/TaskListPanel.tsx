@@ -769,15 +769,15 @@ export const TaskListPanel: React.FC<TaskListPanelProps> = ({
                             <BookmarkPlus className="w-3.5 h-3.5" />
                           </button>
                         )}
-                        <button
-                          onClick={() => onDeleteTask(task)}
-                          className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 transition"
-                          title="Delete task"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
                       </div>
                     )}
+                    <button
+                      onClick={() => onDeleteTask(task)}
+                      className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 transition flex-shrink-0"
+                      title="Delete task"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
                   </div>
 
                   {/* Add Nested Child Task Row */}

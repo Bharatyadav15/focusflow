@@ -10,6 +10,7 @@ import {
   ListChecks,
   Play,
   Repeat,
+  Trash2,
   X,
 } from 'lucide-react';
 import type { CalendarEvent, Project, TaskItem, TimerState } from '../types';
@@ -35,6 +36,7 @@ interface TaskEventDetailModalProps {
   onClose: () => void;
   onStartFocus?: (target: TimerState['activeTarget']) => void;
   onToggleTask?: (taskId: string) => void;
+  onDeleteTask?: (task: TaskItem) => void;
   onTimeBlockTask?: (task: TaskItem) => void;
   onConvertEventToTask?: (evt: CalendarEvent) => void;
 }
@@ -46,6 +48,7 @@ export const TaskEventDetailModal: React.FC<TaskEventDetailModalProps> = ({
   onClose,
   onStartFocus,
   onToggleTask,
+  onDeleteTask,
   onTimeBlockTask,
   onConvertEventToTask,
 }) => {
@@ -229,8 +232,34 @@ export const TaskEventDetailModal: React.FC<TaskEventDetailModalProps> = ({
             </div>
           )}
 
-          <div className="flex items-center justify-end gap-2 pt-2 border-t border-surface-700">
-            {onTimeBlockTask && !t.completed && !t.linkedEventId && !t.calendarEventId && (
+          <div className="flex items-center justify-between gap-2 pt-2 border-t border-surface-700">
+            <div className="flex items-center gap-2">
+              {onDeleteTask && (
+                <button
+                  onClick={() => {
+                    onDeleteTask(t);
+                    onClose();
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/30 border border-rose-500/30 text-xs font-medium text-rose-300"
+                >
+                  <Trash2 className="w-3.5 h-3.5" /> Delete
+                </button>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              {onToggleTask && (
+                <button
+                  onClick={() => {
+                    onToggleTask(t.id);
+                    onClose();
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/30 border border-emerald-500/30 text-xs font-medium text-emerald-300"
+                >
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  {t.completed ? 'Reopen' : 'Mark Complete'}
+                </button>
+              )}
+              {onTimeBlockTask && !t.completed && !t.linkedEventId && !t.calendarEventId && (
               <button
                 onClick={() => {
                   onTimeBlockTask(t);
@@ -259,6 +288,7 @@ export const TaskEventDetailModal: React.FC<TaskEventDetailModalProps> = ({
                 <Play className="w-3.5 h-3.5" /> Start Focus
               </button>
             )}
+            </div>
           </div>
         </div>
       </div>

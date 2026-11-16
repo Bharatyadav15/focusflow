@@ -350,6 +350,7 @@ export function App() {
       projects={data.projects}
       sessions={data.sessions}
       onToggleTask={toggleTaskCompleted}
+      onDeleteTask={deleteTask}
       fetchEventsForRange={fetchEventsForRange}
       onStartFocus={(target) => {
         startFocusOnTarget(target);
