@@ -53,6 +53,8 @@ pub fn get_mcp_tools_schema() -> Value {
                     "include_completed": { "type": "boolean", "description": "Include completed tasks when action='list'" },
                     "search": { "type": "string", "description": "Substring search when action='list'" },
                     "project_id": { "type": "string", "description": "Project ID or name" },
+                    "project_list_id": { "type": ["string", "null"], "description": "Project list/sublist ID (null clears)" },
+                    "linked_event_id": { "type": ["string", "null"], "description": "Calendar event ID to link with this task (null unlinks)" },
                     "recurrence": { "type": "string", "enum": ["none", "daily", "weekdays", "weekly"], "description": "Recurring schedule when completed" },
                     "blocked_by_task_ids": {
                         "type": "array",
@@ -85,7 +87,7 @@ pub fn get_mcp_tools_schema() -> Value {
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["list", "add", "reschedule", "delete", "convert_to_task", "find_free_slots"],
+                        "enum": ["list", "add", "update", "reschedule", "delete", "convert_to_task", "find_free_slots"],
                         "description": "Operation to perform on calendar events"
                     },
                     "event_id": { "type": "string", "description": "Exact event ID" },
@@ -98,6 +100,8 @@ pub fn get_mcp_tools_schema() -> Value {
                     "description": { "type": "string", "description": "Event description" },
                     "priority": { "type": "integer", "description": "Optional priority 1-5" },
                     "project_id": { "type": "string", "description": "Optional project ID or name" },
+                    "project_list_id": { "type": ["string", "null"], "description": "Optional project list/sublist ID (null clears)" },
+                    "linked_task_id": { "type": ["string", "null"], "description": "Optional task ID to link with this event (null unlinks)" },
                     "time_min": { "type": "string", "description": "Start range for action='list'" },
                     "time_max": { "type": "string", "description": "End range for action='list'" },
                     "date": { "type": "string", "description": "Date for find_free_slots ('today', 'tomorrow', '+2d', 'YYYY-MM-DD')" },
@@ -117,7 +121,7 @@ pub fn get_mcp_tools_schema() -> Value {
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["list", "save", "delete", "milestone"],
+                        "enum": ["list", "save", "delete", "milestone", "project_list"],
                         "description": "Operation to perform on projects"
                     },
                     "project_id": { "type": "string", "description": "Exact project ID" },
@@ -142,6 +146,10 @@ pub fn get_mcp_tools_schema() -> Value {
                     "milestone_title": { "type": "string", "description": "Milestone title (when action='milestone')" },
                     "milestone_id": { "type": "string", "description": "Milestone ID (when action='milestone')" },
                     "required_task_ids": { "type": "array", "description": "Task IDs that gate this milestone on completion", "items": { "type": "string" } },
+                    "list_action": { "type": "string", "enum": ["add", "rename", "delete", "move"], "description": "Project list/sublist operation when action='project_list'" },
+                    "list_id": { "type": "string", "description": "Target list/sublist ID (for rename/delete/move)" },
+                    "list_title": { "type": "string", "description": "List/sublist title (for add/rename)" },
+                    "parent_list_id": { "type": ["string", "null"], "description": "Parent list ID for nested sublists (null for top-level)" },
                     "dry_run": { "type": "boolean", "description": "Preview project changes without saving (default false)" }
                 },
                 "required": ["action"]
@@ -719,6 +727,20 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
             created.estimated_pomodoros = estimated_pomodoros;
             created.estimate_explicit = estimate_explicit;
             created.project_id = project_id;
+            created.project_list_id = args
+                .get("project_list_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            if let Some(eid) = args
+                .get("linked_event_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+            {
+                created.linked_event_id = Some(eid.clone());
+                state.store.set_task_event_link(created.id.clone(), Some(eid));
+            }
             created.recurrence = normalize_recurrence_opt(args.get("recurrence").and_then(|v| v.as_str()));
             created.note_link = args
                 .get("note_link")
@@ -867,6 +889,26 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                     Ok(p) => p,
                     Err(err) => return json!({ "ok": false, "error": err }),
                 };
+            }
+            if let Some(pl_val) = args.get("project_list_id") {
+                updated_task.project_list_id = match pl_val {
+                    Value::Null => None,
+                    Value::String(s) if s.trim().is_empty() => None,
+                    Value::String(s) => Some(s.trim().to_string()),
+                    _ => return json!({ "ok": false, "error": "project_list_id must be a string or null" }),
+                };
+            }
+            if let Some(ev_val) = args.get("linked_event_id") {
+                let next_eid = match ev_val {
+                    Value::Null => None,
+                    Value::String(s) if s.trim().is_empty() => None,
+                    Value::String(s) => Some(s.trim().to_string()),
+                    _ => return json!({ "ok": false, "error": "linked_event_id must be a string or null" }),
+                };
+                updated_task.linked_event_id = next_eid.clone();
+                if !dry_run {
+                    state.store.set_task_event_link(updated_task.id.clone(), next_eid);
+                }
             }
 
             let became_completed = !previous_task.completed && updated_task.completed;
@@ -1303,14 +1345,28 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                 Err(err) => return json!({ "ok": false, "error": err }),
             };
 
-            if prio.is_some() || proj.is_some() {
+            let plist = args
+                .get("project_list_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            let linked_tid = args
+                .get("linked_task_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            if prio.is_some() || proj.is_some() || plist.is_some() {
                 state.store.save_event_metadata(
                     created.id.clone(),
                     EventMetadata {
                         priority: prio,
                         project_id: proj,
+                        project_list_id: plist,
                     },
                 );
+            }
+            if let Some(tid) = linked_tid {
+                state.store.set_task_event_link(tid, Some(created.id.clone()));
             }
 
             if event_is_today(&created) {
@@ -1370,24 +1426,86 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                 });
             }
 
-            let updated = match google_api::update_calendar_event(
-                &state.store,
-                UpdateEventPayload {
-                    calendar_id: target_evt.calendar_id.clone(),
-                    event_id: target_evt.id.clone(),
-                    summary: args
-                        .get("new_summary")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string()),
-                    start: new_start_dt.map(|dt| dt.to_rfc3339()),
-                    end: new_end_dt.map(|dt| dt.to_rfc3339()),
-                },
-            )
-            .await
-            {
-                Ok(u) => u,
-                Err(e) => return json!({ "ok": false, "error": e }),
+            let has_time_or_summary = args.get("new_summary").is_some()
+                || new_start_dt.is_some()
+                || new_end_dt.is_some();
+            let updated = if has_time_or_summary {
+                match google_api::update_calendar_event(
+                    &state.store,
+                    UpdateEventPayload {
+                        calendar_id: target_evt.calendar_id.clone(),
+                        event_id: target_evt.id.clone(),
+                        summary: args
+                            .get("new_summary")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
+                        start: new_start_dt.map(|dt| dt.to_rfc3339()),
+                        end: new_end_dt.map(|dt| dt.to_rfc3339()),
+                    },
+                )
+                .await
+                {
+                    Ok(u) => u,
+                    Err(e) => return json!({ "ok": false, "error": e }),
+                }
+            } else {
+                target_evt.clone()
             };
+
+            let app_data_meta = state.store.get_app_data();
+            let mut meta = app_data_meta
+                .event_metadata
+                .get(&updated.id)
+                .cloned()
+                .unwrap_or(EventMetadata {
+                    priority: None,
+                    project_id: None,
+                    project_list_id: None,
+                });
+            let mut meta_changed = false;
+            if let Some(p) = args.get("priority").and_then(|v| v.as_u64()) {
+                meta.priority = Some((p as u8).clamp(1, 5));
+                meta_changed = true;
+            }
+            if let Some(proj_val) = args.get("project_id") {
+                meta.project_id = match proj_val {
+                    Value::Null => None,
+                    Value::String(s) if s.trim().is_empty() => None,
+                    Value::String(s) => match resolve_project_id(&app_data_meta.projects, Some(s)) {
+                        Ok(pid) => pid,
+                        Err(err) => return json!({ "ok": false, "error": err }),
+                    },
+                    _ => None,
+                };
+                meta_changed = true;
+            }
+            if let Some(pl_val) = args.get("project_list_id") {
+                meta.project_list_id = match pl_val {
+                    Value::Null => None,
+                    Value::String(s) if s.trim().is_empty() => None,
+                    Value::String(s) => Some(s.trim().to_string()),
+                    _ => None,
+                };
+                meta_changed = true;
+            }
+            if meta_changed {
+                state.store.save_event_metadata(updated.id.clone(), meta);
+            }
+            if let Some(tid_val) = args.get("linked_task_id") {
+                match tid_val {
+                    Value::String(tid) if !tid.trim().is_empty() => {
+                        state.store.set_task_event_link(tid.trim().to_string(), Some(updated.id.clone()));
+                    }
+                    Value::Null => {
+                        for (tid, eid) in app_data_meta.task_event_links {
+                            if eid == updated.id {
+                                state.store.set_task_event_link(tid, None);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
 
             {
                 let mut lock = state.cached_events.lock().unwrap();
@@ -1665,6 +1783,7 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                     color,
                     description,
                     milestones: milestones.unwrap_or_default(),
+                    lists: Vec::new(),
                     created_at: Utc::now().to_rfc3339(),
                 };
                 projects.push(p.clone());
@@ -1727,6 +1846,132 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                 "ok": true,
                 "deletedProject": removed
             })
+        }
+
+        "manage_project_lists" => {
+            let proj_id = args.get("project_id").and_then(|v| v.as_str());
+            let name_match = args
+                .get("name_match")
+                .or_else(|| args.get("name"))
+                .and_then(|v| v.as_str());
+            let mut projects = state.store.get_app_data().projects;
+            let idx = match pick_unique(
+                &projects,
+                proj_id,
+                name_match,
+                |p| p.id.clone(),
+                |p| p.name.clone(),
+                "project",
+            ) {
+                Ok(i) => i,
+                Err(e) => return e,
+            };
+
+            let list_act = args
+                .get("list_action")
+                .and_then(|v| v.as_str())
+                .unwrap_or("add")
+                .trim()
+                .to_lowercase();
+            let previous_project = projects[idx].clone();
+            let proj = &mut projects[idx];
+
+            match list_act.as_str() {
+                "add" => {
+                    let title = match args.get("list_title").and_then(|v| v.as_str()) {
+                        Some(t) if !t.trim().is_empty() => t.trim().to_string(),
+                        _ => return json!({ "ok": false, "error": "Missing required 'list_title'" }),
+                    };
+                    let parent_list_id = args
+                        .get("parent_list_id")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty());
+                    if let Some(ref pid) = parent_list_id {
+                        if !proj.lists.iter().any(|l| &l.id == pid) {
+                            return json!({ "ok": false, "error": format!("Parent list '{}' not found in project", pid) });
+                        }
+                    }
+                    let created = crate::types::ProjectList {
+                        id: format!("plist-{}", Utc::now().timestamp_millis()),
+                        title,
+                        parent_list_id,
+                        created_at: Utc::now().to_rfc3339(),
+                    };
+                    proj.lists.push(created.clone());
+                    let updated_proj = proj.clone();
+                    if dry_run {
+                        return json!({ "ok": true, "dryRun": true, "previewList": created, "previewProject": updated_proj });
+                    }
+                    state.store.save_projects(projects);
+                    rebuild_tray_menu(app);
+                    let _ = app.emit("data:updated", ());
+                    json!({ "ok": true, "list": created, "project": updated_proj, "previousProject": previous_project })
+                }
+                "rename" | "move" => {
+                    let lid = args.get("list_id").and_then(|v| v.as_str());
+                    let lmatch = args.get("list_title").and_then(|v| v.as_str());
+                    let lidx = match pick_unique(&proj.lists, lid, lmatch, |l| l.id.clone(), |l| l.title.clone(), "project list") {
+                        Ok(i) => i,
+                        Err(e) => return e,
+                    };
+                    if let Some(nt) = args.get("new_title").or_else(|| args.get("list_title")).and_then(|v| v.as_str()) {
+                        if list_act == "rename" && !nt.trim().is_empty() {
+                            proj.lists[lidx].title = nt.trim().to_string();
+                        }
+                    }
+                    if let Some(pv) = args.get("parent_list_id") {
+                        let next_pid = match pv {
+                            Value::Null => None,
+                            Value::String(s) if s.trim().is_empty() => None,
+                            Value::String(s) => Some(s.trim().to_string()),
+                            _ => None,
+                        };
+                        if next_pid.as_deref() == Some(proj.lists[lidx].id.as_str()) {
+                            return json!({ "ok": false, "error": "A list cannot be its own parent" });
+                        }
+                        proj.lists[lidx].parent_list_id = next_pid;
+                    }
+                    let updated_proj = proj.clone();
+                    if dry_run {
+                        return json!({ "ok": true, "dryRun": true, "previewProject": updated_proj });
+                    }
+                    state.store.save_projects(projects);
+                    rebuild_tray_menu(app);
+                    let _ = app.emit("data:updated", ());
+                    json!({ "ok": true, "project": updated_proj, "previousProject": previous_project })
+                }
+                "delete" => {
+                    let lid = args.get("list_id").and_then(|v| v.as_str());
+                    let lmatch = args.get("list_title").and_then(|v| v.as_str());
+                    let lidx = match pick_unique(&proj.lists, lid, lmatch, |l| l.id.clone(), |l| l.title.clone(), "project list") {
+                        Ok(i) => i,
+                        Err(e) => return e,
+                    };
+                    let removed = proj.lists.remove(lidx);
+                    for l in &mut proj.lists {
+                        if l.parent_list_id.as_deref() == Some(removed.id.as_str()) {
+                            l.parent_list_id = removed.parent_list_id.clone();
+                        }
+                    }
+                    let updated_proj = proj.clone();
+                    if dry_run {
+                        return json!({ "ok": true, "dryRun": true, "wouldDeleteList": removed, "previewProject": updated_proj });
+                    }
+                    state.store.save_projects(projects);
+                    let mut tasks = state.store.get_app_data().tasks;
+                    for t in &mut tasks {
+                        if t.project_list_id.as_deref() == Some(removed.id.as_str()) {
+                            t.project_list_id = None;
+                        }
+                    }
+                    state.store.save_tasks(tasks);
+                    rebuild_tray_menu(app);
+                    let _ = app.emit("data:updated", ());
+                    json!({ "ok": true, "deletedList": removed, "project": updated_proj, "previousProject": previous_project })
+                }
+                _ => json!({ "ok": false, "error": format!("Unknown list_action '{}'; valid: add, rename, delete, move", list_act) }),
+            }
         }
 
         "control_timer" => {

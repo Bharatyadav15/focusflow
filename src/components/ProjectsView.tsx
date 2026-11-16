@@ -1,5 +1,6 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
+  Calendar,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -7,6 +8,8 @@ import {
   Circle,
   Clock,
   FolderKanban,
+  Link2,
+  ListPlus,
   Lock,
   Pencil,
   Play,
@@ -16,9 +19,12 @@ import {
   X,
 } from 'lucide-react';
 import type {
+  CalendarEvent,
+  EventMetadata,
   PomodoroSession,
   Priority,
   Project,
+  ProjectList,
   TaskItem,
   TimerState,
 } from '../types';
@@ -30,15 +36,35 @@ import {
   getEffectiveEstimatedPomodoros,
   getEffectiveProjectId,
 } from '../utils/taskTree';
+import { extractYmd, formatTime, toLocalYmd } from '../utils/time';
+import { TaskEventDetailModal, type DetailModalTarget } from './TaskEventDetailModal';
 
 interface ProjectsViewProps {
   projects: Project[];
   tasks: TaskItem[];
+  events?: CalendarEvent[];
+  eventMetadata?: Record<string, EventMetadata>;
   sessions?: PomodoroSession[];
+  fetchEventsForRange?: (timeMin: string, timeMax: string) => Promise<CalendarEvent[]>;
   onSaveProjects: (projects: Project[]) => void;
   onSaveTasks: (tasks: TaskItem[]) => void;
   onToggleTask: (taskId: string) => void;
+  onDeleteTask?: (task: TaskItem) => void;
   onMoveTask?: (taskId: string, newParentId?: string | null) => Promise<boolean>;
+  onSetTaskMetadata?: (
+    taskId: string,
+    meta: { priority?: Priority; projectId?: string; projectListId?: string }
+  ) => void;
+  onSetEventMetadata?: (eventId: string, meta: EventMetadata) => void;
+  onLinkTaskToEvent?: (taskId: string, eventId: string | null) => void;
+  onCreateEvent?: (payload: {
+    summary: string;
+    startIso: string;
+    endIso: string;
+    priority: Priority;
+    projectId?: string;
+    projectListId?: string;
+  }) => Promise<void>;
   onStartFocus: (target: TimerState['activeTarget']) => void;
 }
 
@@ -55,11 +81,19 @@ const PROJECT_COLORS = [
 export const ProjectsView: React.FC<ProjectsViewProps> = ({
   projects,
   tasks,
+  events = [],
+  eventMetadata = {},
   sessions = [],
+  fetchEventsForRange,
   onSaveProjects,
   onSaveTasks,
   onToggleTask,
+  onDeleteTask,
   onMoveTask,
+  onSetTaskMetadata,
+  onSetEventMetadata,
+  onLinkTaskToEvent,
+  onCreateEvent,
   onStartFocus,
 }) => {
   const [selectedProjectId, setSelectedProjectId] = useState<string>(
@@ -78,6 +112,40 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+  const [rangeEvents, setRangeEvents] = useState<CalendarEvent[]>(events);
+  const [newListTitle, setNewListTitle] = useState('');
+  const [sublistParentId, setSublistParentId] = useState<string | null>(null);
+  const [sublistTitle, setSublistTitle] = useState('');
+  const [renamingListId, setRenamingListId] = useState<string | null>(null);
+  const [renameListTitle, setRenameListTitle] = useState('');
+  const [expandedLists, setExpandedLists] = useState<Set<string>>(() => new Set());
+  const [detailTarget, setDetailTarget] = useState<DetailModalTarget | null>(null);
+  const [addingEntryListId, setAddingEntryListId] = useState<string | null>(null);
+  const [entryKind, setEntryKind] = useState<'task' | 'event'>('task');
+  const [entryTitle, setEntryTitle] = useState('');
+  const [entryPriority, setEntryPriority] = useState<Priority>(3);
+  const [entryDate, setEntryDate] = useState(() => toLocalYmd(new Date()));
+  const [entryStart, setEntryStart] = useState('10:00');
+  const [entryEnd, setEntryEnd] = useState('11:00');
+  const [linkingTaskId, setLinkingTaskId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setRangeEvents(events);
+  }, [events]);
+
+  useEffect(() => {
+    if (!fetchEventsForRange) return;
+    const now = new Date();
+    const min = new Date(now);
+    min.setDate(min.getDate() - 7);
+    const max = new Date(now);
+    max.setDate(max.getDate() + 30);
+    fetchEventsForRange(min.toISOString(), max.toISOString())
+      .then((evts) => {
+        if (evts.length > 0) setRangeEvents(evts);
+      })
+      .catch(() => {});
+  }, [fetchEventsForRange, selectedProjectId]);
   const [editColor, setEditColor] = useState(PROJECT_COLORS[0]);
   const [gatingMilestoneId, setGatingMilestoneId] = useState<string | null>(null);
 
@@ -107,6 +175,156 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
     () => flattenTaskTree(projectTasks, expandedIds, tasks),
     [expandedIds, projectTasks, tasks]
   );
+
+  const enrichedEvents = useMemo(
+    () =>
+      rangeEvents.map((e) => {
+        const meta = eventMetadata[e.id];
+        const linkedTask = tasks.find(
+          (t) => t.linkedEventId === e.id || t.calendarEventId === e.id
+        );
+        return {
+          ...e,
+          linkedTaskId: linkedTask?.id ?? e.linkedTaskId,
+          priority: meta?.priority ?? e.priority ?? linkedTask?.priority,
+          projectId: meta?.projectId ?? e.projectId ?? linkedTask?.projectId,
+          projectListId: meta?.projectListId ?? e.projectListId ?? linkedTask?.projectListId,
+        };
+      }),
+    [eventMetadata, rangeEvents, tasks]
+  );
+
+  const projectEvents = useMemo(
+    () =>
+      activeProject
+        ? enrichedEvents
+            .filter((e) => e.projectId === activeProject.id)
+            .sort((a, b) => (a.priority ?? 3) - (b.priority ?? 3))
+        : [],
+    [activeProject, enrichedEvents]
+  );
+
+  const flattenedLists = useMemo(() => {
+    const lists = activeProject?.lists ?? [];
+    const byParent = new Map<string | undefined, ProjectList[]>();
+    for (const l of lists) {
+      const pid = l.parentListId && lists.some((x) => x.id === l.parentListId) ? l.parentListId : undefined;
+      const arr = byParent.get(pid) ?? [];
+      arr.push(l);
+      byParent.set(pid, arr);
+    }
+    const out: { list: ProjectList; depth: number; hasChildren: boolean }[] = [];
+    const walk = (pid: string | undefined, depth: number) => {
+      for (const l of byParent.get(pid) ?? []) {
+        const kids = byParent.get(l.id) ?? [];
+        out.push({ list: l, depth, hasChildren: kids.length > 0 });
+        if (kids.length > 0 && expandedLists.has(l.id)) {
+          walk(l.id, depth + 1);
+        }
+      }
+    };
+    walk(undefined, 0);
+    return out;
+  }, [activeProject?.lists, expandedLists]);
+
+  const handleAddProjectList = (e: React.FormEvent, parentListId?: string) => {
+    e.preventDefault();
+    if (!activeProject) return;
+    const title = (parentListId ? sublistTitle : newListTitle).trim();
+    if (!title) return;
+    const created: ProjectList = {
+      id: `plist-${Date.now()}`,
+      title,
+      parentListId,
+      createdAt: new Date().toISOString(),
+    };
+    onSaveProjects(
+      projects.map((p) =>
+        p.id === activeProject.id ? { ...p, lists: [...(p.lists ?? []), created] } : p
+      )
+    );
+    if (parentListId) {
+      setExpandedLists((prev) => new Set(prev).add(parentListId));
+      setSublistParentId(null);
+      setSublistTitle('');
+    } else {
+      setNewListTitle('');
+    }
+  };
+
+  const handleRenameProjectList = (listId: string) => {
+    if (!activeProject || !renameListTitle.trim()) {
+      setRenamingListId(null);
+      return;
+    }
+    onSaveProjects(
+      projects.map((p) =>
+        p.id === activeProject.id
+          ? {
+              ...p,
+              lists: (p.lists ?? []).map((l) =>
+                l.id === listId ? { ...l, title: renameListTitle.trim() } : l
+              ),
+            }
+          : p
+      )
+    );
+    setRenamingListId(null);
+  };
+
+  const handleDeleteProjectList = (listId: string) => {
+    if (!activeProject) return;
+    const target = (activeProject.lists ?? []).find((l) => l.id === listId);
+    onSaveProjects(
+      projects.map((p) =>
+        p.id === activeProject.id
+          ? {
+              ...p,
+              lists: (p.lists ?? [])
+                .filter((l) => l.id !== listId)
+                .map((l) =>
+                  l.parentListId === listId ? { ...l, parentListId: target?.parentListId } : l
+                ),
+            }
+          : p
+      )
+    );
+    onSaveTasks(
+      tasks.map((t) => (t.projectListId === listId ? { ...t, projectListId: undefined } : t))
+    );
+  };
+
+  const handleAddEntryToList = async (e: React.FormEvent, listId: string) => {
+    e.preventDefault();
+    if (!activeProject || !entryTitle.trim()) return;
+    if (entryKind === 'task') {
+      const created: TaskItem = {
+        id: `task-${Date.now()}`,
+        title: entryTitle.trim(),
+        projectId: activeProject.id,
+        projectListId: listId,
+        priority: entryPriority,
+        completed: false,
+        estimatedPomodoros: 1,
+        completedPomodoros: 0,
+        createdAt: new Date().toISOString(),
+      };
+      onSaveTasks([created, ...tasks]);
+    } else if (onCreateEvent) {
+      const startIso = new Date(`${entryDate}T${entryStart}:00`).toISOString();
+      const endIso = new Date(`${entryDate}T${entryEnd}:00`).toISOString();
+      await onCreateEvent({
+        summary: entryTitle.trim(),
+        startIso,
+        endIso,
+        priority: entryPriority,
+        projectId: activeProject.id,
+        projectListId: listId,
+      });
+    }
+    setEntryTitle('');
+    setAddingEntryListId(null);
+  };
 
   const handleAddProject = (e: React.FormEvent) => {
     e.preventDefault();
@@ -562,6 +780,425 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
               </div>
             </div>
 
+            {/* Project Lists & Sublists (Mixed Tasks + Calendar Events) */}
+            <div className="rounded-2xl bg-surface-800 border border-surface-600/70 p-5 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
+                  <ListPlus className="w-4 h-4 text-indigo-400" />
+                  Lists &amp; Sublists ({(activeProject.lists ?? []).length})
+                </h3>
+                <form
+                  onSubmit={(e) => handleAddProjectList(e)}
+                  className="flex items-center gap-2"
+                >
+                  <input
+                    type="text"
+                    value={newListTitle}
+                    onChange={(e) => setNewListTitle(e.target.value)}
+                    placeholder="New list name..."
+                    className="rounded-xl bg-surface-900 border border-surface-600 px-3 py-1.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                  />
+                  <button
+                    type="submit"
+                    className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-indigo-500 hover:bg-indigo-400 text-xs font-medium text-white"
+                  >
+                    <Plus className="w-3.5 h-3.5" /> Add List
+                  </button>
+                </form>
+              </div>
+
+              {flattenedLists.length === 0 ? (
+                <p className="text-xs text-slate-500 py-2">
+                  No lists yet. Create a list above to organize tasks and calendar events into sections and sublists.
+                </p>
+              ) : (
+                <div className="space-y-3">
+                  {flattenedLists.map(({ list, depth, hasChildren }) => {
+                    const listTasks = projectTasks.filter((t) => t.projectListId === list.id);
+                    const listEvents = projectEvents.filter((e) => e.projectListId === list.id);
+                    const isExpanded = expandedLists.has(list.id);
+
+                    return (
+                      <div
+                        key={list.id}
+                        style={{ marginLeft: depth * 20 }}
+                        className="rounded-xl bg-surface-900/60 border border-surface-700/80 p-3.5 space-y-2.5"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 min-w-0">
+                            {hasChildren ? (
+                              <button
+                                onClick={() =>
+                                  setExpandedLists((prev) => {
+                                    const next = new Set(prev);
+                                    if (next.has(list.id)) next.delete(list.id);
+                                    else next.add(list.id);
+                                    return next;
+                                  })
+                                }
+                                className="text-slate-400 hover:text-slate-200"
+                              >
+                                {isExpanded ? (
+                                  <ChevronDown className="w-4 h-4" />
+                                ) : (
+                                  <ChevronRight className="w-4 h-4" />
+                                )}
+                              </button>
+                            ) : (
+                              <span className="w-4" />
+                            )}
+                            {renamingListId === list.id ? (
+                              <form
+                                onSubmit={(e) => {
+                                  e.preventDefault();
+                                  handleRenameProjectList(list.id);
+                                }}
+                                className="flex items-center gap-1.5"
+                              >
+                                <input
+                                  autoFocus
+                                  value={renameListTitle}
+                                  onChange={(e) => setRenameListTitle(e.target.value)}
+                                  className="rounded bg-surface-800 border border-indigo-500 px-2 py-0.5 text-xs text-slate-100"
+                                />
+                                <button
+                                  type="submit"
+                                  className="text-xs px-2 py-0.5 rounded bg-indigo-500 text-white"
+                                >
+                                  Save
+                                </button>
+                              </form>
+                            ) : (
+                              <span className="text-sm font-semibold text-slate-100">
+                                {list.title}
+                              </span>
+                            )}
+                            <span className="text-[11px] text-slate-400">
+                              {listTasks.length} tasks · {listEvents.length} events
+                            </span>
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {depth < 2 && (
+                              <button
+                                onClick={() => {
+                                  setSublistParentId(sublistParentId === list.id ? null : list.id);
+                                  setSublistTitle('');
+                                }}
+                                className="px-2 py-1 rounded-lg bg-surface-800 hover:bg-surface-700 text-[11px] text-slate-300"
+                              >
+                                + Sublist
+                              </button>
+                            )}
+                            <button
+                              onClick={() => {
+                                setAddingEntryListId(addingEntryListId === list.id ? null : list.id);
+                                setEntryKind('task');
+                                setEntryTitle('');
+                              }}
+                              className="px-2 py-1 rounded-lg bg-indigo-500/20 hover:bg-indigo-500 text-[11px] text-indigo-300 hover:text-white"
+                            >
+                              + Entry
+                            </button>
+                            <button
+                              onClick={() => {
+                                setRenamingListId(list.id);
+                                setRenameListTitle(list.title);
+                              }}
+                              className="p-1 text-slate-400 hover:text-slate-200"
+                              title="Rename list"
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={() => handleDeleteProjectList(list.id)}
+                              className="p-1 text-slate-500 hover:text-rose-400"
+                              title="Delete list"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+
+                        {sublistParentId === list.id && (
+                          <form
+                            onSubmit={(e) => handleAddProjectList(e, list.id)}
+                            className="flex items-center gap-2 pl-6"
+                          >
+                            <input
+                              autoFocus
+                              value={sublistTitle}
+                              onChange={(e) => setSublistTitle(e.target.value)}
+                              placeholder={`New sublist under "${list.title}"...`}
+                              className="flex-1 rounded-lg bg-surface-800 border border-surface-600 px-2.5 py-1 text-xs text-slate-100"
+                            />
+                            <button
+                              type="submit"
+                              className="px-2.5 py-1 rounded-lg bg-indigo-500 text-white text-xs"
+                            >
+                              Add Sublist
+                            </button>
+                          </form>
+                        )}
+
+                        {addingEntryListId === list.id && (
+                          <form
+                            onSubmit={(e) => handleAddEntryToList(e, list.id)}
+                            className="flex flex-wrap items-center gap-2 p-2.5 rounded-xl bg-surface-800 border border-surface-600"
+                          >
+                            <select
+                              value={entryKind}
+                              onChange={(e) => setEntryKind(e.target.value as 'task' | 'event')}
+                              className="rounded-lg bg-surface-900 border border-surface-600 px-2 py-1 text-xs text-slate-200"
+                            >
+                              <option value="task">Task</option>
+                              {onCreateEvent && <option value="event">Calendar Event</option>}
+                            </select>
+                            <input
+                              autoFocus
+                              value={entryTitle}
+                              onChange={(e) => setEntryTitle(e.target.value)}
+                              placeholder={
+                                entryKind === 'task' ? 'Task title...' : 'Calendar event summary...'
+                              }
+                              className="flex-1 min-w-[160px] rounded-lg bg-surface-900 border border-surface-600 px-2.5 py-1 text-xs text-slate-100"
+                            />
+                            <select
+                              value={entryPriority}
+                              onChange={(e) => setEntryPriority(Number(e.target.value) as Priority)}
+                              className="rounded-lg bg-surface-900 border border-surface-600 px-2 py-1 text-xs text-slate-200"
+                            >
+                              {PRIORITIES.map((p) => (
+                                <option key={p.value} value={p.value}>
+                                  {p.short}
+                                </option>
+                              ))}
+                            </select>
+                            {entryKind === 'event' && (
+                              <>
+                                <input
+                                  type="date"
+                                  value={entryDate}
+                                  onChange={(e) => setEntryDate(e.target.value)}
+                                  className="rounded-lg bg-surface-900 border border-surface-600 px-2 py-1 text-xs text-slate-200"
+                                />
+                                <input
+                                  type="time"
+                                  value={entryStart}
+                                  onChange={(e) => setEntryStart(e.target.value)}
+                                  className="rounded-lg bg-surface-900 border border-surface-600 px-2 py-1 text-xs text-slate-200"
+                                />
+                                <input
+                                  type="time"
+                                  value={entryEnd}
+                                  onChange={(e) => setEntryEnd(e.target.value)}
+                                  className="rounded-lg bg-surface-900 border border-surface-600 px-2 py-1 text-xs text-slate-200"
+                                />
+                              </>
+                            )}
+                            <button
+                              type="submit"
+                              className="px-3 py-1 rounded-lg bg-indigo-500 text-white text-xs font-medium"
+                            >
+                              Add
+                            </button>
+                          </form>
+                        )}
+
+                        {/* Link an existing Calendar Event into this list */}
+                        {onSetEventMetadata && enrichedEvents.some((e) => e.projectListId !== list.id) && (
+                          <div className="flex items-center gap-2 pl-6">
+                            <select
+                              value=""
+                              onChange={(e) => {
+                                if (!e.target.value) return;
+                                onSetEventMetadata(e.target.value, {
+                                  ...(eventMetadata[e.target.value] ?? {}),
+                                  projectId: activeProject.id,
+                                  projectListId: list.id,
+                                });
+                              }}
+                              className="rounded-lg bg-surface-800 border border-surface-700 px-2 py-1 text-[11px] text-slate-300"
+                            >
+                              <option value="">+ Assign existing calendar event to this list...</option>
+                              {enrichedEvents
+                                .filter((ev) => ev.projectListId !== list.id)
+                                .map((ev) => (
+                                  <option key={ev.id} value={ev.id}>
+                                    {ev.isAllDay ? extractYmd(ev.start) : `${extractYmd(ev.start)} ${formatTime(ev.start)}`} · {ev.summary}
+                                  </option>
+                                ))}
+                            </select>
+                          </div>
+                        )}
+
+                        {/* Mixed entries inside this list */}
+                        <div className="space-y-1.5 pl-4">
+                          {listEvents.map((evt) => {
+                            const pMeta = getPriorityMeta(evt.priority);
+                            return (
+                              <div
+                                key={evt.id}
+                                onClick={() => setDetailTarget({ kind: 'event', event: evt })}
+                                className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-surface-800/80 border border-surface-700 hover:border-indigo-500/50 cursor-pointer"
+                              >
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <Calendar className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                                  <span className="text-[11px] text-sky-300 shrink-0">
+                                    {evt.isAllDay ? extractYmd(evt.start) : `${extractYmd(evt.start).slice(5)} ${formatTime(evt.start)}`}
+                                  </span>
+                                  <span className="text-xs font-medium text-slate-100 truncate">
+                                    {evt.summary}
+                                  </span>
+                                  {evt.linkedTaskId && (
+                                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 flex items-center gap-1 shrink-0">
+                                      <Link2 className="w-2.5 h-2.5" /> Linked
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+                                  {onSetEventMetadata && (
+                                    <select
+                                      value={evt.priority ?? 3}
+                                      onChange={(e) =>
+                                        onSetEventMetadata(evt.id, {
+                                          ...(eventMetadata[evt.id] ?? {}),
+                                          projectId: activeProject.id,
+                                          projectListId: list.id,
+                                          priority: Number(e.target.value) as Priority,
+                                        })
+                                      }
+                                      className={`text-[10px] px-1.5 py-0.5 rounded border bg-transparent font-semibold ${pMeta.badgeClass}`}
+                                    >
+                                      {PRIORITIES.map((p) => (
+                                        <option key={p.value} value={p.value} className="bg-surface-900">
+                                          {p.short}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  )}
+                                  <button
+                                    onClick={() =>
+                                      onStartFocus({
+                                        type: 'event',
+                                        id: evt.id,
+                                        title: evt.summary,
+                                        calendarEventId: evt.id,
+                                        projectId: activeProject.id,
+                                      })
+                                    }
+                                    className="px-2 py-1 rounded bg-indigo-500/20 hover:bg-indigo-500 text-indigo-300 hover:text-white text-[11px]"
+                                  >
+                                    Focus
+                                  </button>
+                                  {onSetEventMetadata && (
+                                    <button
+                                      onClick={() =>
+                                        onSetEventMetadata(evt.id, {
+                                          ...(eventMetadata[evt.id] ?? {}),
+                                          projectListId: undefined,
+                                        })
+                                      }
+                                      className="p-1 text-slate-500 hover:text-rose-400"
+                                      title="Remove event from this list"
+                                    >
+                                      <X className="w-3.5 h-3.5" />
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                          {listTasks.map((t) => {
+                            const pMeta = getPriorityMeta(t.priority);
+                            return (
+                              <div
+                                key={t.id}
+                                onClick={() => setDetailTarget({ kind: 'task', task: t })}
+                                className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-surface-800/80 border border-surface-700 hover:border-indigo-500/50 cursor-pointer"
+                              >
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      onToggleTask(t.id);
+                                    }}
+                                    className="text-slate-400 hover:text-indigo-400 shrink-0"
+                                  >
+                                    {t.completed ? (
+                                      <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                                    ) : (
+                                      <Circle className="w-4 h-4" />
+                                    )}
+                                  </button>
+                                  <span
+                                    className={`text-xs font-medium truncate ${
+                                      t.completed ? 'line-through text-slate-500' : 'text-slate-100'
+                                    }`}
+                                  >
+                                    {t.title}
+                                  </span>
+                                  {t.linkedEventId && (
+                                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 flex items-center gap-1 shrink-0">
+                                      <Link2 className="w-2.5 h-2.5" /> Linked
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+                                  {onSetTaskMetadata && (
+                                    <select
+                                      value={t.priority ?? 3}
+                                      onChange={(e) =>
+                                        onSetTaskMetadata(t.id, {
+                                          priority: Number(e.target.value) as Priority,
+                                        })
+                                      }
+                                      className={`text-[10px] px-1.5 py-0.5 rounded border bg-transparent font-semibold ${pMeta.badgeClass}`}
+                                    >
+                                      {PRIORITIES.map((p) => (
+                                        <option key={p.value} value={p.value} className="bg-surface-900">
+                                          {p.short}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  )}
+                                  {!t.completed && (
+                                    <button
+                                      onClick={() =>
+                                        onStartFocus({
+                                          type: 'task',
+                                          id: t.id,
+                                          title: t.title,
+                                          projectId: activeProject.id,
+                                          durationMinutes: t.durationMinutes,
+                                        })
+                                      }
+                                      className="px-2 py-1 rounded bg-indigo-500/20 hover:bg-indigo-500 text-indigo-300 hover:text-white text-[11px]"
+                                    >
+                                      Focus
+                                    </button>
+                                  )}
+                                  {onDeleteTask && (
+                                    <button
+                                      onClick={() => onDeleteTask(t)}
+                                      className="p-1 text-slate-500 hover:text-rose-400"
+                                      title="Delete task"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
             {/* Project Tasks */}
             <div className="rounded-2xl bg-surface-800 border border-surface-600/70 p-5">
               <h3 className="text-sm font-semibold text-slate-200 mb-3">
@@ -718,7 +1355,8 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                       </button>
                       <div className="min-w-0">
                         <p
-                          className={`text-sm font-medium truncate ${
+                          onClick={() => setDetailTarget({ kind: 'task', task })}
+                          className={`text-sm font-medium truncate cursor-pointer hover:text-indigo-300 ${
                             task.completed
                               ? 'line-through text-slate-500'
                               : 'text-slate-100'
@@ -726,14 +1364,56 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                         >
                           {task.title}
                         </p>
-                        <span className="text-[11px] text-slate-500 flex items-center gap-2">
-                          <span
-                            className={`px-1.5 py-0.2 rounded border text-[10px] font-semibold ${getPriorityMeta(task.priority).badgeClass}`}
-                          >
-                            {getPriorityMeta(task.priority).short}
-                          </span>
+                        <span className="text-[11px] text-slate-500 flex flex-wrap items-center gap-2 mt-0.5">
+                          {onSetTaskMetadata ? (
+                            <select
+                              value={task.priority ?? 3}
+                              onChange={(e) =>
+                                onSetTaskMetadata(task.id, {
+                                  priority: Number(e.target.value) as Priority,
+                                })
+                              }
+                              className={`px-1.5 py-0.5 rounded border bg-transparent text-[10px] font-semibold ${getPriorityMeta(task.priority).badgeClass}`}
+                            >
+                              {PRIORITIES.map((p) => (
+                                <option key={p.value} value={p.value} className="bg-surface-900 text-slate-100">
+                                  {p.short}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <span
+                              className={`px-1.5 py-0.2 rounded border text-[10px] font-semibold ${getPriorityMeta(task.priority).badgeClass}`}
+                            >
+                              {getPriorityMeta(task.priority).short}
+                            </span>
+                          )}
                           {effDone}/{effEst} pomos
                           {hasChildren ? ` (${openChildCount}/${childCount} open)` : ''}
+                          {onSetTaskMetadata && (activeProject.lists ?? []).length > 0 && (
+                            <select
+                              value={task.projectListId ?? ''}
+                              onChange={(e) =>
+                                onSetTaskMetadata(task.id, {
+                                  projectListId: e.target.value || undefined,
+                                })
+                              }
+                              className="px-1.5 py-0.5 rounded border border-surface-600 bg-transparent text-[10px] text-slate-300"
+                              title="Assign to project list/sublist"
+                            >
+                              <option value="" className="bg-surface-900">No list</option>
+                              {flattenedLists.map(({ list, depth }) => (
+                                <option key={list.id} value={list.id} className="bg-surface-900">
+                                  {'— '.repeat(depth)}{list.title}
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                          {task.linkedEventId && (
+                            <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 flex items-center gap-1 text-[10px]">
+                              <Link2 className="w-2.5 h-2.5" /> Event linked
+                            </span>
+                          )}
                           <select
                             value={task.durationMinutes ?? ''}
                             onChange={(e) =>
@@ -759,6 +1439,19 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                     </div>
 
                     <div className="flex items-center gap-1.5 flex-shrink-0">
+                      {onLinkTaskToEvent && enrichedEvents.length > 0 && (
+                        <button
+                          onClick={() => setLinkingTaskId(linkingTaskId === task.id ? null : task.id)}
+                          className={`p-1.5 rounded-lg text-xs ${
+                            task.linkedEventId
+                              ? 'bg-emerald-500/20 text-emerald-300'
+                              : 'bg-surface-800 hover:bg-surface-700 text-slate-300'
+                          }`}
+                          title="Link to calendar event"
+                        >
+                          <Link2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                       {task.parentId && onMoveTask && (
                         <button
                           onClick={() => onMoveTask(task.id, null)}
@@ -784,15 +1477,60 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                           <Play className="w-3 h-3" /> Focus
                         </button>
                       )}
+                      {onDeleteTask && (
+                        <button
+                          onClick={() => onDeleteTask(task)}
+                          className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 transition"
+                          title="Delete task"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                     </div>
                   </div>
                   );
                 })}
+                {linkingTaskId && onLinkTaskToEvent && (
+                  <div className="p-3 rounded-xl bg-surface-900 border border-indigo-500/40 flex flex-wrap items-center gap-2 text-xs">
+                    <span className="text-slate-300">Link calendar event to task:</span>
+                    <select
+                      value={tasks.find((t) => t.id === linkingTaskId)?.linkedEventId ?? ''}
+                      onChange={(e) => {
+                        onLinkTaskToEvent(linkingTaskId, e.target.value || null);
+                        setLinkingTaskId(null);
+                      }}
+                      className="flex-1 rounded-lg bg-surface-800 border border-surface-600 px-2 py-1 text-xs text-slate-100"
+                    >
+                      <option value="">No linked event (unlink)</option>
+                      {enrichedEvents.map((ev) => (
+                        <option key={ev.id} value={ev.id}>
+                          {ev.isAllDay ? extractYmd(ev.start) : `${extractYmd(ev.start)} ${formatTime(ev.start)}`} · {ev.summary}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      onClick={() => setLinkingTaskId(null)}
+                      className="px-2 py-1 rounded bg-surface-700 text-slate-300"
+                    >
+                      Close
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           </>
         )}
       </div>
+
+      <TaskEventDetailModal
+        target={detailTarget}
+        tasks={tasks}
+        projects={projects}
+        onClose={() => setDetailTarget(null)}
+        onStartFocus={onStartFocus}
+        onToggleTask={onToggleTask}
+        onDeleteTask={onDeleteTask}
+      />
     </div>
   );
 };

@@ -13,6 +13,16 @@ pub struct Milestone {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ProjectList {
+    pub id: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_list_id: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Project {
     pub id: String,
     pub name: String,
@@ -20,6 +30,8 @@ pub struct Project {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub milestones: Vec<Milestone>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lists: Vec<ProjectList>,
     pub created_at: String,
 }
 
@@ -58,6 +70,8 @@ pub struct TaskItem {
     pub notes: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_list_id: Option<String>,
     #[serde(default = "default_priority")]
     pub priority: u8,
     #[serde(default)]
@@ -399,6 +413,8 @@ pub struct EventMetadata {
     pub priority: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_list_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

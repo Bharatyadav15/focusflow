@@ -402,6 +402,7 @@ mod tests {
             title: id.to_string(),
             notes: None,
             project_id: None,
+            project_list_id: None,
             priority: 3,
             completed: false,
             due_date: None,

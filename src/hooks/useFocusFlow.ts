@@ -240,6 +240,7 @@ export function useFocusFlow(isFloating = false) {
         linkedTaskId: matchedTask?.id,
         priority: meta?.priority ?? matchedTask?.priority,
         projectId: meta?.projectId ?? matchedTask?.projectId,
+        projectListId: meta?.projectListId ?? matchedTask?.projectListId,
       };
     });
 
@@ -318,6 +319,7 @@ export function useFocusFlow(isFloating = false) {
       meta: {
         priority?: Priority;
         projectId?: string;
+        projectListId?: string;
         recurrence?: RecurrenceRule;
         durationMinutes?: number;
         estimatedPomodoros?: number;

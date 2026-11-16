@@ -568,11 +568,30 @@ export function App() {
           <ProjectsView
             projects={data.projects}
             tasks={tasks}
+            events={events}
+            eventMetadata={data.eventMetadata}
             sessions={data.sessions}
+            fetchEventsForRange={fetchEventsForRange}
             onSaveProjects={saveProjects}
             onSaveTasks={saveTasks}
             onToggleTask={toggleTaskCompleted}
+            onDeleteTask={deleteTask}
             onMoveTask={moveTask}
+            onSetTaskMetadata={setTaskMetadata}
+            onSetEventMetadata={setEventMetadata}
+            onLinkTaskToEvent={linkTaskToEvent}
+            onCreateEvent={async ({ summary, startIso, endIso, priority, projectId, projectListId }) => {
+              if (!window.electronAPI) return;
+              const created = await window.electronAPI.createCalendarEvent({
+                calendarId: data.settings.defaultWriteCalendarId || 'primary',
+                summary,
+                start: startIso,
+                end: endIso,
+              });
+              await setEventMetadata(created.id, { priority, projectId, projectListId });
+              await loadTodayEvents();
+              notify(`Created event "${summary}"`);
+            }}
             onStartFocus={(target) => {
               startFocusOnTarget(target);
               setTab('day');

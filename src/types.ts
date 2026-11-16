@@ -8,6 +8,13 @@ export interface Subtask {
   done: boolean;
 }
 
+export interface ProjectList {
+  id: string;
+  title: string;
+  parentListId?: string;
+  createdAt: string;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -19,6 +26,7 @@ export interface Project {
     done: boolean;
     requiredTaskIds?: string[];
   }[];
+  lists?: ProjectList[];
   createdAt: string;
 }
 
@@ -53,6 +61,7 @@ export interface TaskItem {
   title: string;
   notes?: string;
   projectId?: string;
+  projectListId?: string;
   priority: Priority;
   completed: boolean;
   dueDate?: string;
@@ -89,6 +98,7 @@ export interface CalendarEvent {
   linkedTaskId?: string;
   priority?: Priority;
   projectId?: string;
+  projectListId?: string;
 }
 
 export interface PomodoroSession {
@@ -169,6 +179,7 @@ export interface ShutdownReviewResult {
 export interface EventMetadata {
   priority?: Priority;
   projectId?: string;
+  projectListId?: string;
 }
 
 export interface AppData {

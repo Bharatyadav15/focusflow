@@ -30,6 +30,7 @@ const AUDITED_TOOLS: &[&str] = &[
     "plan_my_day",
     "manage_subtasks",
     "manage_project_milestone",
+    "manage_project_lists",
     "manage_template",
     "shutdown_review",
     "set_reminder",
@@ -73,10 +74,12 @@ fn normalize_tool_call(name: &str, args: &Value) -> (String, Value) {
         ("manage_task", "subtasks") => "subtask",
         ("manage_event", "create" | "new" | "schedule") => "add",
         ("manage_event", "move") => "reschedule",
+        ("manage_event", "edit" | "link") => "update",
         ("manage_event", "remove") => "delete",
         ("manage_project", "create" | "add" | "update") => "save",
         ("manage_project", "remove") => "delete",
         ("manage_project", "milestones") => "milestone",
+        ("manage_project", "lists" | "list_item" | "section") => "project_list",
         (_, a) => a,
     }
     .to_string();
@@ -107,7 +110,7 @@ fn normalize_tool_call(name: &str, args: &Value) -> (String, Value) {
         "manage_event" => match action.as_str() {
             "list" | "" => ("list_calendar_events".to_string(), args.clone()),
             "add" => ("add_calendar_event".to_string(), args.clone()),
-            "reschedule" => ("reschedule_calendar_event".to_string(), args.clone()),
+            "reschedule" | "update" => ("reschedule_calendar_event".to_string(), args.clone()),
             "delete" => ("delete_calendar_event".to_string(), args.clone()),
             "convert_to_task" => ("convert_event_to_task".to_string(), args.clone()),
             "find_free_slots" => ("find_free_slots".to_string(), args.clone()),
@@ -128,6 +131,7 @@ fn normalize_tool_call(name: &str, args: &Value) -> (String, Value) {
                 }
                 ("manage_project_milestone".to_string(), cloned)
             }
+            "project_list" => ("manage_project_lists".to_string(), args.clone()),
             _ => (name.to_string(), args.clone()),
         },
         _ => (name.to_string(), args.clone()),
@@ -224,7 +228,7 @@ pub async fn execute_tool(app: &AppHandle, raw_name: &str, raw_args: &Value) -> 
                 "reschedule_calendar_event" => {
                     result.get("previousEvent").map(|d| json!({ "kind": "event_patch", "data": d }))
                 }
-                "create_or_update_project" | "manage_project_milestone" => {
+                "create_or_update_project" | "manage_project_milestone" | "manage_project_lists" => {
                     result
                         .get("previousProject")
                         .filter(|p| !p.is_null())
