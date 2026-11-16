@@ -91,6 +91,27 @@ interface TodayViewProps {
   onToggleSubtask?: (taskId: string, subtaskId: string) => void;
   onDeleteSubtask?: (taskId: string, subtaskId: string) => void;
   onSetEventMetadata: (eventId: string, meta: EventMetadata) => void;
+  onUpdateTaskDetails?: (
+    taskId: string,
+    patch: {
+      title?: string;
+      notes?: string;
+      priority?: Priority;
+      projectId?: string;
+      projectListId?: string;
+      dueDate?: string;
+    }
+  ) => Promise<void> | void;
+  onUpdateEventDetails?: (
+    evt: CalendarEvent,
+    patch: {
+      summary?: string;
+      description?: string;
+      priority?: Priority;
+      projectId?: string;
+      projectListId?: string;
+    }
+  ) => Promise<void> | void;
   onRescheduleTask: (task: TaskItem, dueIso: string) => void;
   onRescheduleEvent: (
     evt: CalendarEvent,
@@ -154,6 +175,8 @@ export const TodayView: React.FC<TodayViewProps> = ({
   onToggleSubtask,
   onDeleteSubtask,
   onSetEventMetadata,
+  onUpdateTaskDetails,
+  onUpdateEventDetails,
   onRescheduleTask,
   onRescheduleEvent,
   onTimeBlockTask,
@@ -389,6 +412,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
           <DaySchedulePanel
             sortedEvents={sortedEvents}
             taskMap={taskMap}
+            projectMap={projectMap}
             timer={timer}
             loadingEvents={loadingEvents}
             sortEventsByPriority={sortEventsByPriority}
@@ -427,6 +451,8 @@ export const TodayView: React.FC<TodayViewProps> = ({
         onDeleteTask={onDeleteTask}
         onTimeBlockTask={onTimeBlockTask}
         onConvertEventToTask={onConvertEventToTask}
+        onUpdateTaskDetails={onUpdateTaskDetails}
+        onUpdateEventDetails={onUpdateEventDetails}
       />
     </div>
   );

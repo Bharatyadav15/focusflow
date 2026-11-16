@@ -174,6 +174,8 @@ pub struct CalendarEvent {
     pub priority: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_list_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -310,6 +310,7 @@ pub async fn fetch_calendar_events(
                                 linked_task_id: linked_tid,
                                 priority: meta.and_then(|m| m.priority),
                                 project_id: meta.and_then(|m| m.project_id.clone()),
+                                project_list_id: meta.and_then(|m| m.project_list_id.clone()),
                             });
                         }
                     }
@@ -332,6 +333,9 @@ pub async fn fetch_calendar_events(
                 }
                 if local_evt.project_id.is_none() {
                     local_evt.project_id = meta.project_id.clone();
+                }
+                if local_evt.project_list_id.is_none() {
+                    local_evt.project_list_id = meta.project_list_id.clone();
                 }
             }
             if local_evt.linked_task_id.is_none() {
@@ -385,6 +389,7 @@ pub async fn create_calendar_event(
                 linked_task_id: None,
                 priority: None,
                 project_id: None,
+                project_list_id: None,
             };
             store.add_local_event(local_evt.clone());
             if has_google {
@@ -431,6 +436,7 @@ pub async fn create_calendar_event(
                 linked_task_id: None,
                 priority: None,
                 project_id: None,
+                project_list_id: None,
             };
             store.add_local_event(local_evt.clone());
             store.enqueue_sync_op(PendingSyncOp::CreateEvent {
@@ -466,6 +472,7 @@ pub async fn create_calendar_event(
         linked_task_id: None,
         priority: None,
         project_id: None,
+        project_list_id: None,
     })
 }
 
@@ -519,6 +526,7 @@ pub async fn update_calendar_event(
                 linked_task_id: None,
                 priority: None,
                 project_id: None,
+                project_list_id: None,
             });
         }
     };
@@ -578,6 +586,7 @@ pub async fn update_calendar_event(
         linked_task_id: None,
         priority: None,
         project_id: None,
+        project_list_id: None,
     })
 }
 

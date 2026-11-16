@@ -520,6 +520,9 @@ export const TaskListPanel: React.FC<TaskListPanelProps> = ({
                             }}
                           >
                             {proj.name}
+                            {task.projectListId && proj.lists?.find((l) => l.id === task.projectListId)
+                              ? ` · ${proj.lists.find((l) => l.id === task.projectListId)?.title}`
+                              : ''}
                           </span>
                         )}
 

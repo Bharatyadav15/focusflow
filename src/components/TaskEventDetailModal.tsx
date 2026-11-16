@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Calendar,
   CalendarClock,
@@ -8,13 +8,14 @@ import {
   ExternalLink,
   FolderKanban,
   ListChecks,
+  Pencil,
   Play,
   Repeat,
   Trash2,
   X,
 } from 'lucide-react';
-import type { CalendarEvent, Project, TaskItem, TimerState } from '../types';
-import { getPriorityMeta } from '../utils/priority';
+import type { CalendarEvent, Priority, Project, TaskItem, TimerState } from '../types';
+import { getPriorityMeta, PRIORITIES } from '../utils/priority';
 import {
   getChildren,
   getEffectiveCompletedPomodoros,
@@ -39,6 +40,27 @@ interface TaskEventDetailModalProps {
   onDeleteTask?: (task: TaskItem) => void;
   onTimeBlockTask?: (task: TaskItem) => void;
   onConvertEventToTask?: (evt: CalendarEvent) => void;
+  onUpdateTaskDetails?: (
+    taskId: string,
+    patch: {
+      title?: string;
+      notes?: string;
+      priority?: Priority;
+      projectId?: string;
+      projectListId?: string;
+      dueDate?: string;
+    }
+  ) => Promise<void> | void;
+  onUpdateEventDetails?: (
+    evt: CalendarEvent,
+    patch: {
+      summary?: string;
+      description?: string;
+      priority?: Priority;
+      projectId?: string;
+      projectListId?: string;
+    }
+  ) => Promise<void> | void;
 }
 
 export const TaskEventDetailModal: React.FC<TaskEventDetailModalProps> = ({
@@ -51,7 +73,39 @@ export const TaskEventDetailModal: React.FC<TaskEventDetailModalProps> = ({
   onDeleteTask,
   onTimeBlockTask,
   onConvertEventToTask,
+  onUpdateTaskDetails,
+  onUpdateEventDetails,
 }) => {
+  const [editing, setEditing] = useState(false);
+  const [draftTitle, setDraftTitle] = useState('');
+  const [draftNotes, setDraftNotes] = useState('');
+  const [draftPriority, setDraftPriority] = useState<Priority>(3);
+  const [draftProjectId, setDraftProjectId] = useState('');
+  const [draftGroupId, setDraftGroupId] = useState('');
+  const [draftDueDate, setDraftDueDate] = useState('');
+
+  useEffect(() => {
+    setEditing(false);
+    if (!target) return;
+    if (target.kind === 'task') {
+      const t = tasks.find((x) => x.id === target.task.id) ?? target.task;
+      setDraftTitle(t.title);
+      setDraftNotes(t.notes ?? '');
+      setDraftPriority(t.priority ?? 3);
+      setDraftProjectId(t.projectId ?? '');
+      setDraftGroupId(t.projectListId ?? '');
+      setDraftDueDate(t.dueDate ? extractYmd(t.dueDate) : '');
+    } else {
+      const ev = target.event;
+      setDraftTitle(ev.summary);
+      setDraftNotes(ev.description ?? '');
+      setDraftPriority(ev.priority ?? 3);
+      setDraftProjectId(ev.projectId ?? '');
+      setDraftGroupId(ev.projectListId ?? '');
+      setDraftDueDate('');
+    }
+  }, [target, tasks]);
+
   useEffect(() => {
     if (!target) return;
     const onKey = (e: KeyboardEvent) => {
@@ -70,6 +124,10 @@ export const TaskEventDetailModal: React.FC<TaskEventDetailModalProps> = ({
     const pMeta = getPriorityMeta(t.priority);
     const effProjId = getEffectiveProjectId(tasks, t);
     const proj = effProjId ? projectMap.get(effProjId) : undefined;
+    const groupObj = proj && t.projectListId
+      ? proj.lists?.find((l) => l.id === t.projectListId)
+      : undefined;
+    const draftProj = draftProjectId ? projectMap.get(draftProjectId) : undefined;
     const effDue = getEffectiveDueDate(tasks, t);
     const effEst = getEffectiveEstimatedPomodoros(tasks, t.id);
     const effDone = getEffectiveCompletedPomodoros(tasks, t.id);
@@ -114,14 +172,118 @@ export const TaskEventDetailModal: React.FC<TaskEventDetailModalProps> = ({
                 </h2>
               </div>
             </div>
-            <button
-              onClick={onClose}
-              className="p-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-surface-700"
-              aria-label="Close details"
-            >
-              <X className="w-4 h-4" />
-            </button>
+            <div className="flex items-center gap-1">
+              {onUpdateTaskDetails && (
+                <button
+                  onClick={() => setEditing((v) => !v)}
+                  className={`p-1.5 rounded-lg transition ${
+                    editing
+                      ? 'bg-indigo-500/20 text-indigo-300'
+                      : 'text-slate-400 hover:text-slate-100 hover:bg-surface-700'
+                  }`}
+                  title="Edit task"
+                >
+                  <Pencil className="w-4 h-4" />
+                </button>
+              )}
+              <button
+                onClick={onClose}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-surface-700"
+                aria-label="Close details"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
           </div>
+
+          {editing && onUpdateTaskDetails && (
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                if (!draftTitle.trim()) return;
+                await onUpdateTaskDetails(t.id, {
+                  title: draftTitle.trim(),
+                  notes: draftNotes.trim(),
+                  priority: draftPriority,
+                  projectId: draftProjectId || undefined,
+                  projectListId: draftProjectId ? draftGroupId || undefined : undefined,
+                  dueDate: draftDueDate || undefined,
+                });
+                setEditing(false);
+              }}
+              className="rounded-xl bg-surface-900/80 border border-indigo-500/40 p-3 space-y-2.5 text-xs"
+            >
+              <input
+                value={draftTitle}
+                onChange={(e) => setDraftTitle(e.target.value)}
+                placeholder="Task title"
+                className="w-full rounded-lg bg-surface-800 border border-surface-600 px-2.5 py-1.5 text-slate-100"
+              />
+              <textarea
+                value={draftNotes}
+                onChange={(e) => setDraftNotes(e.target.value)}
+                placeholder="Task notes..."
+                rows={2}
+                className="w-full rounded-lg bg-surface-800 border border-surface-600 px-2.5 py-1.5 text-slate-100"
+              />
+              <div className="grid grid-cols-2 gap-2">
+                <select
+                  value={draftPriority}
+                  onChange={(e) => setDraftPriority(Number(e.target.value) as Priority)}
+                  className="rounded-lg bg-surface-800 border border-surface-600 px-2 py-1 text-slate-100"
+                >
+                  {PRIORITIES.map((p) => (
+                    <option key={p.value} value={p.value}>{p.label}</option>
+                  ))}
+                </select>
+                <input
+                  type="date"
+                  value={draftDueDate}
+                  onChange={(e) => setDraftDueDate(e.target.value)}
+                  className="rounded-lg bg-surface-800 border border-surface-600 px-2 py-1 text-slate-100"
+                />
+                <select
+                  value={draftProjectId}
+                  onChange={(e) => {
+                    setDraftProjectId(e.target.value);
+                    setDraftGroupId('');
+                  }}
+                  className="rounded-lg bg-surface-800 border border-surface-600 px-2 py-1 text-slate-100"
+                >
+                  <option value="">No project</option>
+                  {projects.map((p) => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </select>
+                <select
+                  value={draftGroupId}
+                  onChange={(e) => setDraftGroupId(e.target.value)}
+                  disabled={!draftProj || (draftProj.lists ?? []).length === 0}
+                  className="rounded-lg bg-surface-800 border border-surface-600 px-2 py-1 text-slate-100 disabled:opacity-50"
+                >
+                  <option value="">No group</option>
+                  {(draftProj?.lists ?? []).map((g) => (
+                    <option key={g.id} value={g.id}>{g.title}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setEditing(false)}
+                  className="px-2.5 py-1 rounded bg-surface-700 text-slate-300"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-3 py-1 rounded bg-indigo-500 text-white font-medium"
+                >
+                  Save
+                </button>
+              </div>
+            </form>
+          )}
 
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <span
@@ -136,6 +298,7 @@ export const TaskEventDetailModal: React.FC<TaskEventDetailModalProps> = ({
               >
                 <FolderKanban className="w-3 h-3" />
                 {proj.name}
+                {groupObj ? ` · ${groupObj.title}` : ''}
               </span>
             )}
             {t.googleTaskListTitle && (
@@ -297,6 +460,10 @@ export const TaskEventDetailModal: React.FC<TaskEventDetailModalProps> = ({
 
   const evt = target.event;
   const proj = evt.projectId ? projectMap.get(evt.projectId) : undefined;
+  const evtGroup = proj && evt.projectListId
+    ? proj.lists?.find((l) => l.id === evt.projectListId)
+    : undefined;
+  const draftEvtProj = draftProjectId ? projectMap.get(draftProjectId) : undefined;
   const linkedTask = evt.linkedTaskId
     ? tasks.find((t) => t.id === evt.linkedTaskId)
     : undefined;
@@ -333,14 +500,111 @@ export const TaskEventDetailModal: React.FC<TaskEventDetailModalProps> = ({
             )}
             <h2 className="text-base font-semibold text-slate-100">{evt.summary}</h2>
           </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-surface-700"
-            aria-label="Close details"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-1">
+            {onUpdateEventDetails && (
+              <button
+                onClick={() => setEditing((v) => !v)}
+                className={`p-1.5 rounded-lg transition ${
+                  editing
+                    ? 'bg-indigo-500/20 text-indigo-300'
+                    : 'text-slate-400 hover:text-slate-100 hover:bg-surface-700'
+                }`}
+                title="Edit event"
+              >
+                <Pencil className="w-4 h-4" />
+              </button>
+            )}
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-surface-700"
+              aria-label="Close details"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
+
+        {editing && onUpdateEventDetails && (
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              if (!draftTitle.trim()) return;
+              await onUpdateEventDetails(evt, {
+                summary: draftTitle.trim(),
+                description: draftNotes.trim(),
+                priority: draftPriority,
+                projectId: draftProjectId || undefined,
+                projectListId: draftProjectId ? draftGroupId || undefined : undefined,
+              });
+              setEditing(false);
+            }}
+            className="rounded-xl bg-surface-900/80 border border-indigo-500/40 p-3 space-y-2.5 text-xs"
+          >
+            <input
+              value={draftTitle}
+              onChange={(e) => setDraftTitle(e.target.value)}
+              placeholder="Event summary"
+              className="w-full rounded-lg bg-surface-800 border border-surface-600 px-2.5 py-1.5 text-slate-100"
+            />
+            <textarea
+              value={draftNotes}
+              onChange={(e) => setDraftNotes(e.target.value)}
+              placeholder="Event description / notes..."
+              rows={2}
+              className="w-full rounded-lg bg-surface-800 border border-surface-600 px-2.5 py-1.5 text-slate-100"
+            />
+            <div className="grid grid-cols-3 gap-2">
+              <select
+                value={draftPriority}
+                onChange={(e) => setDraftPriority(Number(e.target.value) as Priority)}
+                className="rounded-lg bg-surface-800 border border-surface-600 px-2 py-1 text-slate-100"
+              >
+                {PRIORITIES.map((p) => (
+                  <option key={p.value} value={p.value}>{p.label}</option>
+                ))}
+              </select>
+              <select
+                value={draftProjectId}
+                onChange={(e) => {
+                  setDraftProjectId(e.target.value);
+                  setDraftGroupId('');
+                }}
+                className="rounded-lg bg-surface-800 border border-surface-600 px-2 py-1 text-slate-100"
+              >
+                <option value="">No project</option>
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+              <select
+                value={draftGroupId}
+                onChange={(e) => setDraftGroupId(e.target.value)}
+                disabled={!draftEvtProj || (draftEvtProj.lists ?? []).length === 0}
+                className="rounded-lg bg-surface-800 border border-surface-600 px-2 py-1 text-slate-100 disabled:opacity-50"
+              >
+                <option value="">No group</option>
+                {(draftEvtProj?.lists ?? []).map((g) => (
+                  <option key={g.id} value={g.id}>{g.title}</option>
+                ))}
+              </select>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setEditing(false)}
+                className="px-2.5 py-1 rounded bg-surface-700 text-slate-300"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="px-3 py-1 rounded bg-indigo-500 text-white font-medium"
+              >
+                Save
+              </button>
+            </div>
+          </form>
+        )}
 
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <span className="px-2 py-0.5 rounded bg-surface-900 text-indigo-300 flex items-center gap-1">
@@ -355,6 +619,7 @@ export const TaskEventDetailModal: React.FC<TaskEventDetailModalProps> = ({
               style={{ backgroundColor: `${proj.color}22`, color: proj.color }}
             >
               {proj.name}
+              {evtGroup ? ` · ${evtGroup.title}` : ''}
             </span>
           )}
           {linkedTask && (

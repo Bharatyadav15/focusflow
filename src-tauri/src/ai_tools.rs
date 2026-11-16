@@ -1,8 +1,8 @@
 use crate::google_api::{self, CreateEventPayload, UpdateEventPayload, UpdateTaskPatch};
 use crate::planner;
 use crate::types::{
-    ActiveTarget, CalendarEvent, EventMetadata, Milestone, Project, ScheduledReminder, Subtask,
-    TaskItem, TaskTemplate,
+    ActiveTarget, CalendarEvent, EventMetadata, Milestone, Project, ProjectList, ScheduledReminder,
+    Subtask, TaskItem, TaskTemplate,
 };
 use crate::{ensure_floating_window, rebuild_tray_menu, AppState};
 use chrono::{Datelike, Duration, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
@@ -13,20 +13,29 @@ pub fn get_mcp_tools_schema() -> Value {
     Value::Array(vec![
         json!({
             "name": "get_overview",
-            "description": "Get FocusFlow snapshot: active timer, top 10 urgent tasks, today's schedule, project summaries, sync & MCP status. Pass detail=true for all open tasks, full projects, and focus stats.",
+            "description": "Get FocusFlow snapshot: active timer, Today or Week tasks and calendar events with project & optional group/list context, project summaries, sync & MCP status. Pass range='week' (and optional date) for Week planner view, or detail=true for full open tasks, all events, detailed projects, and focus stats.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "detail": {
                         "type": "boolean",
                         "description": "Set true for full open tasks, all events, detailed projects, and focus stats (default false)"
+                    },
+                    "range": {
+                        "type": "string",
+                        "enum": ["today", "week"],
+                        "description": "Schedule window to query with project/group context (default 'today')"
+                    },
+                    "date": {
+                        "type": "string",
+                        "description": "Anchor date for range='today' or 'week' ('today', 'tomorrow', 'YYYY-MM-DD')"
                     }
                 }
             }
         }),
         json!({
             "name": "manage_task",
-            "description": "Unified task, reminder, dependency & recurring-task tool: list, add, update (including recurrence daily/weekdays/weekly and blocked_by_task_ids), complete, delete, or manage subtasks. (Use plan_my_day with task_id to time-block a single task.)",
+            "description": "Manage FocusFlow tasks (smallest actionable work items alongside calendar events). Use due_date when only a day or flexible time is given rather than fabricating event times. Supports project_id and optional project_list_id (group/list ID validated against project_id), recurrence, subtasks, and dry_run.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -53,7 +62,7 @@ pub fn get_mcp_tools_schema() -> Value {
                     "include_completed": { "type": "boolean", "description": "Include completed tasks when action='list'" },
                     "search": { "type": "string", "description": "Substring search when action='list'" },
                     "project_id": { "type": "string", "description": "Project ID or name" },
-                    "project_list_id": { "type": ["string", "null"], "description": "Project list/sublist ID (null clears)" },
+                    "project_list_id": { "type": ["string", "null"], "description": "Optional group/list ID within project_id (null clears)" },
                     "linked_event_id": { "type": ["string", "null"], "description": "Calendar event ID to link with this task (null unlinks)" },
                     "recurrence": { "type": "string", "enum": ["none", "daily", "weekdays", "weekly"], "description": "Recurring schedule when completed" },
                     "blocked_by_task_ids": {
@@ -81,7 +90,7 @@ pub fn get_mcp_tools_schema() -> Value {
         }),
         json!({
             "name": "manage_event",
-            "description": "Unified calendar event tool: list events, find free slots, add, reschedule, delete, or convert an event into a timed task.",
+            "description": "Manage calendar events (timed work items alongside tasks). Events require an explicit start time; if the user gives only a day or flexible time, do NOT fabricate event times—create a dated task via manage_task or ask for times. Do not duplicate an event as a task. Supports project_id, optional project_list_id (group/list ID), description (event notes), priority, and dry_run.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -93,14 +102,14 @@ pub fn get_mcp_tools_schema() -> Value {
                     "event_id": { "type": "string", "description": "Exact event ID" },
                     "summary_match": { "type": "string", "description": "Event title substring match if event_id is omitted" },
                     "summary": { "type": "string", "description": "Event title (required for 'add')" },
-                    "new_summary": { "type": "string", "description": "New event title (for 'reschedule')" },
-                    "start": { "type": "string", "description": "Start time: ISO-8601, 'YYYY-MM-DD HH:MM', or 'HH:MM'" },
+                    "new_summary": { "type": "string", "description": "New event title (for 'update'/'reschedule')" },
+                    "start": { "type": "string", "description": "Explicit start time: ISO-8601, 'YYYY-MM-DD HH:MM', or 'HH:MM' (required for 'add'; do not fabricate)" },
                     "end": { "type": "string", "description": "End time: ISO-8601, 'YYYY-MM-DD HH:MM', or 'HH:MM'" },
                     "duration_minutes": { "type": "integer", "description": "Duration in minutes (default 60)" },
-                    "description": { "type": "string", "description": "Event description" },
+                    "description": { "type": "string", "description": "Event description / notes" },
                     "priority": { "type": "integer", "description": "Optional priority 1-5" },
                     "project_id": { "type": "string", "description": "Optional project ID or name" },
-                    "project_list_id": { "type": ["string", "null"], "description": "Optional project list/sublist ID (null clears)" },
+                    "project_list_id": { "type": ["string", "null"], "description": "Optional group/list ID within project_id (null clears)" },
                     "linked_task_id": { "type": ["string", "null"], "description": "Optional task ID to link with this event (null unlinks)" },
                     "time_min": { "type": "string", "description": "Start range for action='list'" },
                     "time_max": { "type": "string", "description": "End range for action='list'" },
@@ -115,7 +124,7 @@ pub fn get_mcp_tools_schema() -> Value {
         }),
         json!({
             "name": "manage_project",
-            "description": "Unified project tool: list projects, create/update a project, delete a project, or manage milestones (supporting required_task_ids to gate milestones on task completion).",
+            "description": "Manage projects, milestones (outcome checkpoints like 'Publish ten story summaries'), and optional groups/lists (containers like 'Summary sessions' that organize tasks and events). Keep milestones distinct from groups/lists; neither is required to attach tasks or events to a project. Pass project_id or name_match with action='list' to retrieve a project's groups, milestones, tasks, and events.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -128,7 +137,8 @@ pub fn get_mcp_tools_schema() -> Value {
                     "name_match": { "type": "string", "description": "Project name substring match" },
                     "name": { "type": "string", "description": "Project name (required for action='save')" },
                     "color": { "type": "string", "description": "Hex color code, e.g. '#6366f1'" },
-                    "description": { "type": "string", "description": "Project description" },
+                    "description": { "type": "string", "description": "Optional project notes / description" },
+                    "notes": { "type": "string", "description": "Alias for project description / notes" },
                     "milestones": {
                         "type": "array",
                         "description": "Milestones list when action='save'",
@@ -142,14 +152,15 @@ pub fn get_mcp_tools_schema() -> Value {
                             "required": ["title"]
                         }
                     },
-                    "milestone_action": { "type": "string", "enum": ["add", "toggle", "remove"], "description": "Milestone operation when action='milestone'" },
+                    "milestone_action": { "type": "string", "enum": ["add", "toggle", "remove", "update"], "description": "Milestone operation when action='milestone'" },
                     "milestone_title": { "type": "string", "description": "Milestone title (when action='milestone')" },
                     "milestone_id": { "type": "string", "description": "Milestone ID (when action='milestone')" },
                     "required_task_ids": { "type": "array", "description": "Task IDs that gate this milestone on completion", "items": { "type": "string" } },
-                    "list_action": { "type": "string", "enum": ["add", "rename", "delete", "move"], "description": "Project list/sublist operation when action='project_list'" },
-                    "list_id": { "type": "string", "description": "Target list/sublist ID (for rename/delete/move)" },
-                    "list_title": { "type": "string", "description": "List/sublist title (for add/rename)" },
-                    "parent_list_id": { "type": ["string", "null"], "description": "Parent list ID for nested sublists (null for top-level)" },
+                    "list_action": { "type": "string", "enum": ["add", "rename", "delete", "move"], "description": "Group/list operation when action='project_list'" },
+                    "list_id": { "type": "string", "description": "Target group/list ID (for rename/delete/move)" },
+                    "list_title": { "type": "string", "description": "Group/list title (for add or match for rename/delete/move)" },
+                    "new_title": { "type": "string", "description": "New group/list or milestone title (for rename/update)" },
+                    "parent_list_id": { "type": ["string", "null"], "description": "Parent group/list ID for nested sublists (null for top-level)" },
                     "dry_run": { "type": "boolean", "description": "Preview project changes without saving (default false)" }
                 },
                 "required": ["action"]
@@ -380,6 +391,80 @@ fn resolve_project_id(projects: &[Project], raw_project: Option<&str>) -> Result
     }
 }
 
+fn validate_group_belongs_to_project(
+    projects: &[Project],
+    project_id: Option<&str>,
+    group_id: Option<&str>,
+) -> Result<Option<String>, String> {
+    let Some(gid) = group_id.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(project_id.map(|s| s.to_string()));
+    };
+    if let Some(pid) = project_id {
+        let Some(proj) = projects.iter().find(|p| p.id == pid) else {
+            return Err(format!("Project '{}' not found", pid));
+        };
+        if proj.lists.iter().any(|l| l.id == gid) {
+            return Ok(Some(proj.id.clone()));
+        }
+        return Err(format!(
+            "Group/list '{}' does not belong to project '{}' ({})",
+            gid, proj.name, proj.id
+        ));
+    }
+    let owners: Vec<&Project> = projects
+        .iter()
+        .filter(|p| p.lists.iter().any(|l| l.id == gid))
+        .collect();
+    match owners.len() {
+        0 => Err(format!("Group/list '{}' not found in any project", gid)),
+        1 => Ok(Some(owners[0].id.clone())),
+        _ => Err(format!(
+            "Group/list '{}' matched multiple projects; specify project_id",
+            gid
+        )),
+    }
+}
+
+fn validate_group_parent(
+    lists: &[ProjectList],
+    node_id: Option<&str>,
+    new_parent_id: Option<&str>,
+) -> Result<(), String> {
+    let Some(pid) = new_parent_id.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(());
+    };
+    if node_id == Some(pid) {
+        return Err("A group/list cannot be its own parent".to_string());
+    }
+    if !lists.iter().any(|l| l.id == pid) {
+        return Err(format!("Parent group/list '{}' not found in project", pid));
+    }
+    // Walk up ancestors to detect cycles and enforce max depth 3 (root=0, child=1, grandchild=2)
+    let mut depth = 1usize;
+    let mut cur = Some(pid);
+    let mut visited = std::collections::HashSet::new();
+    while let Some(id) = cur {
+        if node_id == Some(id) {
+            return Err("Cycle detected: cannot move a group/list under its own descendant".to_string());
+        }
+        if !visited.insert(id) {
+            return Err("Existing cycle detected in group/list hierarchy".to_string());
+        }
+        let next_parent = lists
+            .iter()
+            .find(|l| l.id == id)
+            .and_then(|l| l.parent_list_id.as_deref());
+        if next_parent.is_some() {
+            depth += 1;
+            if depth >= 3 {
+                return Err("Maximum group/list nesting depth (3 levels) exceeded".to_string());
+            }
+        }
+        cur = next_parent;
+    }
+    Ok(())
+}
+
 fn normalize_recurrence_opt(raw: Option<&str>) -> Option<String> {
     match raw.map(str::trim).map(str::to_lowercase).as_deref() {
         Some("daily") => Some("daily".to_string()),
@@ -497,23 +582,108 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
     match name {
         "get_overview" => {
             let detail = args.get("detail").and_then(|v| v.as_bool()).unwrap_or(false);
+            let range = args
+                .get("range")
+                .and_then(|v| v.as_str())
+                .unwrap_or("today")
+                .trim()
+                .to_lowercase();
+            let anchor_ymd = args
+                .get("date")
+                .and_then(|v| v.as_str())
+                .map(parse_flexible_due_date)
+                .unwrap_or_else(|| ymd_string(&Local::now()));
+            let anchor_date = NaiveDate::parse_from_str(&anchor_ymd, "%Y-%m-%d")
+                .unwrap_or_else(|_| Local::now().date_naive());
+            let (win_start_ymd, win_end_ymd) = if range == "week" {
+                let days_from_sun = anchor_date.weekday().num_days_from_sunday() as i64;
+                let ws = anchor_date - Duration::days(days_from_sun);
+                let we = ws + Duration::days(6);
+                (ws.format("%Y-%m-%d").to_string(), we.format("%Y-%m-%d").to_string())
+            } else {
+                (anchor_ymd.clone(), anchor_ymd.clone())
+            };
+
             let app_data = state.store.get_app_data();
             let timer = state.timer.lock().unwrap().clone();
-            let mut events = state.cached_events.lock().unwrap().clone();
+            let mut events = if range == "week" || args.get("date").is_some() {
+                let tmin = Local
+                    .from_local_datetime(&NaiveDateTime::new(
+                        NaiveDate::parse_from_str(&win_start_ymd, "%Y-%m-%d").unwrap_or(anchor_date),
+                        NaiveTime::from_hms_opt(0, 0, 0).unwrap(),
+                    ))
+                    .single()
+                    .map(|dt| dt.to_rfc3339())
+                    .unwrap_or_default();
+                let tmax = Local
+                    .from_local_datetime(&NaiveDateTime::new(
+                        NaiveDate::parse_from_str(&win_end_ymd, "%Y-%m-%d").unwrap_or(anchor_date),
+                        NaiveTime::from_hms_opt(23, 59, 59).unwrap(),
+                    ))
+                    .single()
+                    .map(|dt| dt.to_rfc3339())
+                    .unwrap_or_default();
+                google_api::fetch_calendar_events(&state.store, tmin, tmax)
+                    .await
+                    .unwrap_or_else(|_| state.cached_events.lock().unwrap().clone())
+            } else {
+                state.cached_events.lock().unwrap().clone()
+            };
             if events.is_empty() {
                 events = state.store.get_local_events();
             }
-            let today_events: Vec<&CalendarEvent> = if detail {
-                events.iter().collect()
-            } else {
-                events.iter().filter(|e| event_is_today(e)).collect()
+
+            let enrich_project_ctx = |pid: Option<&str>, gid: Option<&str>| -> (Option<String>, Option<String>) {
+                let proj = pid.and_then(|id| app_data.projects.iter().find(|p| p.id == id));
+                let pname = proj.map(|p| p.name.clone());
+                let gtitle = proj.and_then(|p| {
+                    gid.and_then(|g| p.lists.iter().find(|l| l.id == g).map(|l| l.title.clone()))
+                });
+                (pname, gtitle)
             };
+
+            let window_events: Vec<Value> = events
+                .iter()
+                .filter(|e| {
+                    if detail && range == "today" && args.get("date").is_none() {
+                        return true;
+                    }
+                    let ey = e.start.get(..10).unwrap_or("");
+                    ey >= win_start_ymd.as_str() && ey <= win_end_ymd.as_str()
+                })
+                .map(|e| {
+                    let meta = app_data.event_metadata.get(&e.id);
+                    let pid = meta.and_then(|m| m.project_id.as_deref()).or(e.project_id.as_deref());
+                    let gid = meta.and_then(|m| m.project_list_id.as_deref()).or(e.project_list_id.as_deref());
+                    let (pname, gtitle) = enrich_project_ctx(pid, gid);
+                    let mut v = serde_json::to_value(e).unwrap_or(Value::Null);
+                    if let Some(obj) = v.as_object_mut() {
+                        if let Some(p) = pid { obj.insert("projectId".into(), json!(p)); }
+                        if let Some(pn) = pname { obj.insert("projectName".into(), json!(pn)); }
+                        if let Some(g) = gid { obj.insert("projectListId".into(), json!(g)); }
+                        if let Some(gt) = gtitle { obj.insert("groupTitle".into(), json!(gt)); }
+                    }
+                    v
+                })
+                .collect();
+
             let today_ymd = ymd_string(&Local::now());
             // Count a parent with open children as one work unit, not one per child.
             let mut open_tasks: Vec<&TaskItem> = app_data
                 .tasks
                 .iter()
                 .filter(|t| crate::task_tree::is_open_unit_representative(&app_data.tasks, t))
+                .filter(|t| {
+                    if range == "week" {
+                        let d = crate::task_tree::effective_due_date(&app_data.tasks, t);
+                        d.as_deref()
+                            .and_then(|s| s.get(..10))
+                            .map(|y| y >= win_start_ymd.as_str() && y <= win_end_ymd.as_str())
+                            .unwrap_or(false)
+                    } else {
+                        true
+                    }
+                })
                 .collect();
             open_tasks.sort_by(|a, b| {
                 let a_due = a.due_date.as_deref().and_then(|s| s.get(..10));
@@ -526,26 +696,40 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                     .then_with(|| a_due.unwrap_or("9999-12-31").cmp(b_due.unwrap_or("9999-12-31")))
             });
             let total_open = open_tasks.len();
+            let enrich_task = |t: &TaskItem| -> Value {
+                let eff_pid = crate::task_tree::effective_project_id(&app_data.tasks, t);
+                let (pname, gtitle) = enrich_project_ctx(eff_pid.as_deref(), t.project_list_id.as_deref());
+                let mut v = serde_json::to_value(t).unwrap_or(Value::Null);
+                if let Some(obj) = v.as_object_mut() {
+                    if let Some(pn) = pname { obj.insert("projectName".into(), json!(pn)); }
+                    if let Some(gt) = gtitle { obj.insert("groupTitle".into(), json!(gt)); }
+                }
+                v
+            };
             let last_synced = state.last_google_sync.lock().unwrap().clone();
             let (mcp_ok, mcp_desc) = state.mcp_status.lock().unwrap().clone();
             if detail {
+                let enriched_tasks: Vec<Value> = open_tasks.into_iter().map(enrich_task).collect();
                 json!({
                     "ok": true,
                     "detail": true,
+                    "range": range,
+                    "windowStart": win_start_ymd,
+                    "windowEnd": win_end_ymd,
                     "googleConnected": app_data.google_connected,
                     "lastSyncedAt": last_synced,
                     "pendingSyncCount": app_data.pending_sync_count,
                     "mcpStatus": { "ok": mcp_ok, "detail": mcp_desc },
                     "timer": timer,
                     "openTasksCount": total_open,
-                    "openTasks": open_tasks,
-                    "todayEventsCount": today_events.len(),
-                    "todayEvents": today_events,
+                    "openTasks": enriched_tasks,
+                    "todayEventsCount": window_events.len(),
+                    "todayEvents": window_events,
                     "projects": app_data.projects,
                     "focusStats": planner::compute_focus_stats(&app_data),
                 })
             } else {
-                let top_tasks: Vec<&TaskItem> = open_tasks.into_iter().take(10).collect();
+                let top_tasks: Vec<Value> = open_tasks.into_iter().take(if range == "week" { 50 } else { 10 }).map(enrich_task).collect();
                 let compact_projects: Vec<Value> = app_data
                     .projects
                     .iter()
@@ -554,6 +738,8 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                             "id": p.id,
                             "name": p.name,
                             "color": p.color,
+                            "description": p.description,
+                            "groupsCount": p.lists.len(),
                             "milestonesDone": p.milestones.iter().filter(|m| m.done).count(),
                             "milestonesTotal": p.milestones.len(),
                         })
@@ -562,6 +748,9 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                 json!({
                     "ok": true,
                     "detail": false,
+                    "range": range,
+                    "windowStart": win_start_ymd,
+                    "windowEnd": win_end_ymd,
                     "googleConnected": app_data.google_connected,
                     "lastSyncedAt": last_synced,
                     "pendingSyncCount": app_data.pending_sync_count,
@@ -570,8 +759,8 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                     "openTasksCount": total_open,
                     "openTasksShowing": top_tasks.len(),
                     "openTasks": top_tasks,
-                    "todayEventsCount": today_events.len(),
-                    "todayEvents": today_events,
+                    "todayEventsCount": window_events.len(),
+                    "todayEvents": window_events,
                     "projects": compact_projects,
                 })
             }
@@ -686,6 +875,19 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                 Ok(p) => p,
                 Err(err) => return json!({ "ok": false, "error": err }),
             };
+            let req_group_id = args
+                .get("project_list_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            let project_id = match validate_group_belongs_to_project(
+                &app_data.projects,
+                project_id.as_deref(),
+                req_group_id.as_deref(),
+            ) {
+                Ok(p) => p,
+                Err(err) => return json!({ "ok": false, "error": err }),
+            };
 
             if dry_run {
                 return json!({
@@ -702,6 +904,7 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                         "estimatedPomodoros": estimated_pomodoros,
                         "estimateExplicit": estimate_explicit,
                         "projectId": project_id,
+                        "projectListId": req_group_id,
                         "recurrence": normalize_recurrence_opt(args.get("recurrence").and_then(|v| v.as_str())),
                         "noteLink": args.get("note_link").and_then(|v| v.as_str()),
                     }
@@ -727,11 +930,7 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
             created.estimated_pomodoros = estimated_pomodoros;
             created.estimate_explicit = estimate_explicit;
             created.project_id = project_id;
-            created.project_list_id = args
-                .get("project_list_id")
-                .and_then(|v| v.as_str())
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty());
+            created.project_list_id = req_group_id;
             if let Some(eid) = args
                 .get("linked_event_id")
                 .and_then(|v| v.as_str())
@@ -793,10 +992,17 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
 
             rebuild_tray_menu(app);
             let _ = app.emit("data:updated", ());
+            let persisted = state
+                .store
+                .get_app_data()
+                .tasks
+                .into_iter()
+                .find(|t| t.id == created.id)
+                .unwrap_or(created);
             json!({
                 "ok": true,
-                "message": format!("Added task '{}'", created.title),
-                "task": created
+                "message": format!("Added task '{}'", persisted.title),
+                "task": persisted
             })
         }
 
@@ -897,6 +1103,16 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                     Value::String(s) => Some(s.trim().to_string()),
                     _ => return json!({ "ok": false, "error": "project_list_id must be a string or null" }),
                 };
+            }
+            if let Some(ref gid) = updated_task.project_list_id {
+                match validate_group_belongs_to_project(
+                    &app_data.projects,
+                    updated_task.project_id.as_deref(),
+                    Some(gid.as_str()),
+                ) {
+                    Ok(pid) => updated_task.project_id = pid,
+                    Err(err) => return json!({ "ok": false, "error": err }),
+                }
             }
             if let Some(ev_val) = args.get("linked_event_id") {
                 let next_eid = match ev_val {
@@ -1285,9 +1501,20 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                 _ => return json!({ "ok": false, "error": "Missing required 'summary'" }),
             };
             let start_raw = match args.get("start").and_then(|v| v.as_str()) {
-                Some(s) if !s.trim().is_empty() => s,
-                _ => return json!({ "ok": false, "error": "Missing required 'start' time" }),
+                Some(s) if !s.trim().is_empty() => s.trim(),
+                _ => {
+                    return json!({
+                        "ok": false,
+                        "error": "Calendar events require an explicit 'start' time. Do not fabricate times; either ask the user for a start time or create a dated task with manage_task(action='add', due_date=...)."
+                    });
+                }
             };
+            if start_raw.len() == 10 && NaiveDate::parse_from_str(start_raw, "%Y-%m-%d").is_ok() {
+                return json!({
+                    "ok": false,
+                    "error": format!("'{}' is a date without a time. Calendar events require an explicit start time; either ask the user for a time or create a dated task via manage_task(action='add', due_date='{}').", start_raw, start_raw)
+                });
+            }
             let Some(start_dt) = parse_flexible_datetime(start_raw, None) else {
                 return json!({
                     "ok": false,
@@ -1315,9 +1542,23 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                 .get("priority")
                 .and_then(|v| v.as_u64())
                 .map(|n| (n as u8).clamp(1, 5));
+            let all_projects = state.store.get_app_data().projects;
             let proj = match resolve_project_id(
-                &state.store.get_app_data().projects,
+                &all_projects,
                 args.get("project_id").and_then(|v| v.as_str()),
+            ) {
+                Ok(p) => p,
+                Err(err) => return json!({ "ok": false, "error": err }),
+            };
+            let plist = args
+                .get("project_list_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            let proj = match validate_group_belongs_to_project(
+                &all_projects,
+                proj.as_deref(),
+                plist.as_deref(),
             ) {
                 Ok(p) => p,
                 Err(err) => return json!({ "ok": false, "error": err }),
@@ -1335,6 +1576,7 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                         "end": end_dt.to_rfc3339(),
                         "priority": prio,
                         "projectId": proj,
+                        "projectListId": plist,
                     }
                 });
             }
@@ -1358,11 +1600,6 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                 Err(err) => return json!({ "ok": false, "error": err }),
             };
 
-            let plist = args
-                .get("project_list_id")
-                .and_then(|v| v.as_str())
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty());
             let linked_tid = args
                 .get("linked_task_id")
                 .and_then(|v| v.as_str())
@@ -1382,15 +1619,23 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                 state.store.set_task_event_link(tid, Some(created.id.clone()));
             }
 
-            if event_is_today(&created) {
-                state.cached_events.lock().unwrap().push(created.clone());
+            let mut persisted_evt = created.clone();
+            let post_data = state.store.get_app_data();
+            if let Some(meta) = post_data.event_metadata.get(&persisted_evt.id) {
+                persisted_evt.priority = meta.priority;
+                persisted_evt.project_id = meta.project_id.clone();
+                persisted_evt.project_list_id = meta.project_list_id.clone();
+            }
+
+            if event_is_today(&persisted_evt) {
+                state.cached_events.lock().unwrap().push(persisted_evt.clone());
             }
             rebuild_tray_menu(app);
             let _ = app.emit("data:updated", ());
             json!({
                 "ok": true,
-                "message": format!("Scheduled calendar event '{}'", created.summary),
-                "event": created
+                "message": format!("Scheduled calendar event '{}'", persisted_evt.summary),
+                "event": persisted_evt
             })
         }
 
@@ -1497,9 +1742,22 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                     Value::Null => None,
                     Value::String(s) if s.trim().is_empty() => None,
                     Value::String(s) => Some(s.trim().to_string()),
-                    _ => None,
+                    _ => return json!({ "ok": false, "error": "project_list_id must be a string or null" }),
                 };
                 meta_changed = true;
+            }
+            if let Some(ref gid) = meta.project_list_id {
+                match validate_group_belongs_to_project(
+                    &app_data_meta.projects,
+                    meta.project_id.as_deref(),
+                    Some(gid.as_str()),
+                ) {
+                    Ok(pid) => {
+                        meta.project_id = pid;
+                        meta_changed = true;
+                    }
+                    Err(err) => return json!({ "ok": false, "error": err }),
+                }
             }
             if meta_changed {
                 state.store.save_event_metadata(updated.id.clone(), meta);
@@ -1520,24 +1778,32 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                 }
             }
 
+            let mut persisted_evt = updated.clone();
+            let post_data = state.store.get_app_data();
+            if let Some(m) = post_data.event_metadata.get(&persisted_evt.id) {
+                persisted_evt.priority = m.priority;
+                persisted_evt.project_id = m.project_id.clone();
+                persisted_evt.project_list_id = m.project_list_id.clone();
+            }
+
             {
                 let mut lock = state.cached_events.lock().unwrap();
-                if let Some(pos) = lock.iter().position(|e| e.id == updated.id) {
-                    if event_is_today(&updated) {
-                        lock[pos] = updated.clone();
+                if let Some(pos) = lock.iter().position(|e| e.id == persisted_evt.id) {
+                    if event_is_today(&persisted_evt) {
+                        lock[pos] = persisted_evt.clone();
                     } else {
                         lock.remove(pos);
                     }
-                } else if event_is_today(&updated) {
-                    lock.push(updated.clone());
+                } else if event_is_today(&persisted_evt) {
+                    lock.push(persisted_evt.clone());
                 }
             }
             rebuild_tray_menu(app);
             let _ = app.emit("data:updated", ());
             json!({
                 "ok": true,
-                "message": format!("Updated calendar event '{}'", updated.summary),
-                "event": updated,
+                "message": format!("Updated calendar event '{}'", persisted_evt.summary),
+                "event": persisted_evt,
                 "previousEvent": target_evt,
             })
         }
@@ -1712,9 +1978,84 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
 
         "list_projects" => {
             let app_data = state.store.get_app_data();
+            let proj_id = args.get("project_id").and_then(|v| v.as_str());
+            let name_match = args
+                .get("name_match")
+                .or_else(|| args.get("name"))
+                .and_then(|v| v.as_str());
+
+            let mut all_events = state.cached_events.lock().unwrap().clone();
+            for le in state.store.get_local_events() {
+                if !le.id.starts_with("demo-evt-") && !all_events.iter().any(|e| e.id == le.id) {
+                    all_events.push(le);
+                }
+            }
+            for evt in &mut all_events {
+                if let Some(meta) = app_data.event_metadata.get(&evt.id) {
+                    if evt.priority.is_none() { evt.priority = meta.priority; }
+                    if evt.project_id.is_none() { evt.project_id = meta.project_id.clone(); }
+                    if evt.project_list_id.is_none() { evt.project_list_id = meta.project_list_id.clone(); }
+                }
+            }
+
+            if proj_id.is_some() || name_match.is_some() {
+                let idx = match pick_unique(
+                    &app_data.projects,
+                    proj_id,
+                    name_match,
+                    |p| p.id.clone(),
+                    |p| p.name.clone(),
+                    "project",
+                ) {
+                    Ok(i) => i,
+                    Err(e) => return e,
+                };
+                let proj = &app_data.projects[idx];
+                let proj_tasks: Vec<&TaskItem> = app_data
+                    .tasks
+                    .iter()
+                    .filter(|t| crate::task_tree::effective_project_id(&app_data.tasks, t).as_deref() == Some(proj.id.as_str()))
+                    .collect();
+                let proj_events: Vec<&CalendarEvent> = all_events
+                    .iter()
+                    .filter(|e| e.project_id.as_deref() == Some(proj.id.as_str()))
+                    .collect();
+                return json!({
+                    "ok": true,
+                    "project": proj,
+                    "groups": proj.lists,
+                    "milestones": proj.milestones,
+                    "tasks": proj_tasks,
+                    "events": proj_events,
+                });
+            }
+
+            let summaries: Vec<Value> = app_data
+                .projects
+                .iter()
+                .map(|p| {
+                    let task_count = app_data
+                        .tasks
+                        .iter()
+                        .filter(|t| crate::task_tree::effective_project_id(&app_data.tasks, t).as_deref() == Some(p.id.as_str()))
+                        .count();
+                    let event_count = all_events
+                        .iter()
+                        .filter(|e| e.project_id.as_deref() == Some(p.id.as_str()))
+                        .count();
+                    let mut v = serde_json::to_value(p).unwrap_or(Value::Null);
+                    if let Some(obj) = v.as_object_mut() {
+                        obj.insert("groupCount".into(), json!(p.lists.len()));
+                        obj.insert("milestoneCount".into(), json!(p.milestones.len()));
+                        obj.insert("taskCount".into(), json!(task_count));
+                        obj.insert("eventCount".into(), json!(event_count));
+                    }
+                    v
+                })
+                .collect();
             json!({
                 "ok": true,
-                "projects": app_data.projects
+                "projects": summaries
             })
         }
 
@@ -1731,6 +2072,7 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                 .to_string();
             let description = args
                 .get("description")
+                .or_else(|| args.get("notes"))
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
 
@@ -1892,7 +2234,7 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                 .trim()
                 .to_lowercase();
             let previous_project = projects[idx].clone();
-            let proj = &mut projects[idx];
+            let proj_id_actual = projects[idx].id.clone();
 
             match list_act.as_str() {
                 "add" => {
@@ -1902,93 +2244,106 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                     };
                     let parent_id = args
                         .get("parent_list_id")
-                        .or_else(|| args.get("parent_milestone_id"))
                         .and_then(|v| v.as_str())
                         .map(|s| s.trim().to_string())
                         .filter(|s| !s.is_empty());
-                    if let Some(ref pid) = parent_id {
-                        if !proj.milestones.iter().any(|m| &m.id == pid) {
-                            return json!({ "ok": false, "error": format!("Parent milestone/list '{}' not found in project", pid) });
-                        }
+                    if let Err(err) = validate_group_parent(&projects[idx].lists, None, parent_id.as_deref()) {
+                        return json!({ "ok": false, "error": err });
                     }
-                    let created = Milestone {
-                        id: format!("ms-{}", Utc::now().timestamp_millis()),
+                    let created = ProjectList {
+                        id: format!("plist-{}", Utc::now().timestamp_millis()),
                         title,
-                        done: false,
-                        parent_id,
-                        required_task_ids: Vec::new(),
+                        parent_list_id: parent_id,
+                        created_at: Utc::now().to_rfc3339(),
                     };
-                    proj.milestones.push(created.clone());
-                    let updated_proj = proj.clone();
+                    projects[idx].lists.push(created.clone());
+                    let updated_proj = projects[idx].clone();
                     if dry_run {
-                        return json!({ "ok": true, "dryRun": true, "previewList": created, "previewProject": updated_proj });
+                        return json!({ "ok": true, "dryRun": true, "previewGroup": created, "previewList": created, "previewProject": updated_proj });
                     }
                     state.store.save_projects(projects);
                     rebuild_tray_menu(app);
                     let _ = app.emit("data:updated", ());
-                    json!({ "ok": true, "list": created, "milestone": created, "project": updated_proj, "previousProject": previous_project })
+                    let persisted_proj = state.store.get_app_data().projects.into_iter().find(|p| p.id == proj_id_actual).unwrap_or(updated_proj);
+                    let persisted_grp = persisted_proj.lists.iter().find(|l| l.id == created.id).cloned().unwrap_or(created);
+                    json!({ "ok": true, "group": persisted_grp, "list": persisted_grp, "project": persisted_proj, "previousProject": previous_project })
                 }
                 "rename" | "move" => {
-                    let lid = args.get("list_id").or_else(|| args.get("milestone_id")).and_then(|v| v.as_str());
-                    let lmatch = args.get("list_title").or_else(|| args.get("milestone_title")).and_then(|v| v.as_str());
-                    let lidx = match pick_unique(&proj.milestones, lid, lmatch, |m| m.id.clone(), |m| m.title.clone(), "milestone") {
+                    let lid = args.get("list_id").and_then(|v| v.as_str());
+                    let lmatch = args.get("list_title").and_then(|v| v.as_str());
+                    let lidx = match pick_unique(&projects[idx].lists, lid, lmatch, |l| l.id.clone(), |l| l.title.clone(), "group/list") {
                         Ok(i) => i,
                         Err(e) => return e,
                     };
-                    if let Some(nt) = args.get("new_title").or_else(|| args.get("list_title")).and_then(|v| v.as_str()) {
+                    let target_id = projects[idx].lists[lidx].id.clone();
+                    if let Some(nt) = args.get("new_title").or_else(|| if lid.is_some() { args.get("list_title") } else { None }).and_then(|v| v.as_str()) {
                         if list_act == "rename" && !nt.trim().is_empty() {
-                            proj.milestones[lidx].title = nt.trim().to_string();
+                            projects[idx].lists[lidx].title = nt.trim().to_string();
                         }
                     }
-                    if let Some(pv) = args.get("parent_list_id").or_else(|| args.get("parent_milestone_id")) {
+                    if let Some(pv) = args.get("parent_list_id") {
                         let next_pid = match pv {
                             Value::Null => None,
                             Value::String(s) if s.trim().is_empty() => None,
                             Value::String(s) => Some(s.trim().to_string()),
-                            _ => None,
+                            _ => return json!({ "ok": false, "error": "parent_list_id must be a string or null" }),
                         };
-                        if next_pid.as_deref() == Some(proj.milestones[lidx].id.as_str()) {
-                            return json!({ "ok": false, "error": "A milestone/list cannot be its own parent" });
+                        if let Err(err) = validate_group_parent(&projects[idx].lists, Some(&target_id), next_pid.as_deref()) {
+                            return json!({ "ok": false, "error": err });
                         }
-                        proj.milestones[lidx].parent_id = next_pid;
+                        projects[idx].lists[lidx].parent_list_id = next_pid;
                     }
-                    let updated_proj = proj.clone();
+                    let updated_proj = projects[idx].clone();
                     if dry_run {
                         return json!({ "ok": true, "dryRun": true, "previewProject": updated_proj });
                     }
                     state.store.save_projects(projects);
                     rebuild_tray_menu(app);
                     let _ = app.emit("data:updated", ());
-                    json!({ "ok": true, "project": updated_proj, "previousProject": previous_project })
+                    let persisted_proj = state.store.get_app_data().projects.into_iter().find(|p| p.id == proj_id_actual).unwrap_or(updated_proj);
+                    let persisted_grp = persisted_proj.lists.iter().find(|l| l.id == target_id).cloned();
+                    json!({ "ok": true, "group": persisted_grp, "list": persisted_grp, "project": persisted_proj, "previousProject": previous_project })
                 }
                 "delete" => {
-                    let lid = args.get("list_id").or_else(|| args.get("milestone_id")).and_then(|v| v.as_str());
-                    let lmatch = args.get("list_title").or_else(|| args.get("milestone_title")).and_then(|v| v.as_str());
-                    let lidx = match pick_unique(&proj.milestones, lid, lmatch, |m| m.id.clone(), |m| m.title.clone(), "milestone") {
+                    let lid = args.get("list_id").and_then(|v| v.as_str());
+                    let lmatch = args.get("list_title").and_then(|v| v.as_str());
+                    let lidx = match pick_unique(&projects[idx].lists, lid, lmatch, |l| l.id.clone(), |l| l.title.clone(), "group/list") {
                         Ok(i) => i,
                         Err(e) => return e,
                     };
-                    let removed = proj.milestones.remove(lidx);
-                    for m in &mut proj.milestones {
-                        if m.parent_id.as_deref() == Some(removed.id.as_str()) {
-                            m.parent_id = removed.parent_id.clone();
+                    let removed = projects[idx].lists.remove(lidx);
+                    for l in &mut projects[idx].lists {
+                        if l.parent_list_id.as_deref() == Some(removed.id.as_str()) {
+                            l.parent_list_id = removed.parent_list_id.clone();
                         }
                     }
-                    let updated_proj = proj.clone();
+                    let updated_proj = projects[idx].clone();
                     if dry_run {
-                        return json!({ "ok": true, "dryRun": true, "wouldDeleteList": removed, "previewProject": updated_proj });
+                        return json!({ "ok": true, "dryRun": true, "wouldDeleteGroup": removed, "wouldDeleteList": removed, "previewProject": updated_proj });
                     }
                     state.store.save_projects(projects);
-                    let mut tasks = state.store.get_app_data().tasks;
+                    let app_data = state.store.get_app_data();
+                    let mut tasks = app_data.tasks;
+                    let mut tasks_changed = false;
                     for t in &mut tasks {
                         if t.project_list_id.as_deref() == Some(removed.id.as_str()) {
                             t.project_list_id = None;
+                            tasks_changed = true;
                         }
                     }
-                    state.store.save_tasks(tasks);
+                    if tasks_changed {
+                        state.store.save_tasks(tasks);
+                    }
+                    for (eid, mut meta) in app_data.event_metadata {
+                        if meta.project_list_id.as_deref() == Some(removed.id.as_str()) {
+                            meta.project_list_id = None;
+                            state.store.save_event_metadata(eid, meta);
+                        }
+                    }
                     rebuild_tray_menu(app);
                     let _ = app.emit("data:updated", ());
-                    json!({ "ok": true, "deletedList": removed, "project": updated_proj, "previousProject": previous_project })
+                    let persisted_proj = state.store.get_app_data().projects.into_iter().find(|p| p.id == proj_id_actual).unwrap_or(updated_proj);
+                    json!({ "ok": true, "deletedGroup": removed, "deletedList": removed, "project": persisted_proj, "previousProject": previous_project })
                 }
                 _ => json!({ "ok": false, "error": format!("Unknown list_action '{}'; valid: add, rename, delete, move", list_act) }),
             }
@@ -2932,7 +3287,7 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
             json!({
                 "ok": false,
                 "error": format!(
-                    "Unknown action '{}' for manage_project; valid actions: list, save, delete, milestone",
+                    "Unknown action '{}' for manage_project; valid actions: list, save, delete, milestone, project_list",
                     act
                 )
             })
@@ -3004,5 +3359,117 @@ fn pick_unique<T>(
                 "candidates": list
             }))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_project() -> Project {
+        Project {
+            id: "proj-1".into(),
+            name: "Rajasthani Story Summaries".into(),
+            color: "#6366f1".into(),
+            description: Some("Project notes".into()),
+            milestones: vec![Milestone {
+                id: "ms-1".into(),
+                title: "Publish ten story summaries".into(),
+                done: false,
+                parent_id: None,
+                required_task_ids: vec![],
+            }],
+            lists: vec![
+                ProjectList {
+                    id: "grp-1".into(),
+                    title: "Summary sessions".into(),
+                    parent_list_id: None,
+                    created_at: "2026-11-16T00:00:00Z".into(),
+                },
+                ProjectList {
+                    id: "grp-2".into(),
+                    title: "Batch A".into(),
+                    parent_list_id: Some("grp-1".into()),
+                    created_at: "2026-11-16T00:00:00Z".into(),
+                },
+                ProjectList {
+                    id: "grp-3".into(),
+                    title: "Level 3".into(),
+                    parent_list_id: Some("grp-2".into()),
+                    created_at: "2026-11-16T00:00:00Z".into(),
+                },
+            ],
+            created_at: "2026-11-16T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn group_validation_checks_project_ownership() {
+        let mut other = sample_project();
+        other.id = "proj-2".into();
+        other.name = "GitHub Pages".into();
+        other.lists = vec![];
+        let projects = vec![sample_project(), other];
+
+        assert_eq!(
+            validate_group_belongs_to_project(&projects, Some("proj-1"), Some("grp-1")).unwrap(),
+            Some("proj-1".into())
+        );
+        assert_eq!(
+            validate_group_belongs_to_project(&projects, None, Some("grp-2")).unwrap(),
+            Some("proj-1".into())
+        );
+        assert!(validate_group_belongs_to_project(&projects, Some("proj-2"), Some("grp-1")).is_err());
+        assert!(validate_group_belongs_to_project(&projects, Some("proj-1"), Some("missing")).is_err());
+    }
+
+    #[test]
+    fn group_parent_validation_prevents_cycles_and_excess_depth() {
+        let p = sample_project();
+        assert!(validate_group_parent(&p.lists, Some("grp-1"), Some("grp-1")).is_err());
+        assert!(validate_group_parent(&p.lists, Some("grp-1"), Some("grp-2")).is_err());
+        assert!(validate_group_parent(&p.lists, None, Some("grp-3")).is_err());
+        assert!(validate_group_parent(&p.lists, Some("grp-2"), None).is_ok());
+    }
+
+    #[test]
+    fn project_and_event_serialization_backward_compatible() {
+        let raw_proj = r##"{"id":"p1","name":"Test","color":"#fff","milestones":[],"createdAt":"2026-11-16T00:00:00Z"}"##;
+        let parsed: Project = serde_json::from_str(raw_proj).unwrap();
+        assert!(parsed.lists.is_empty());
+
+        let evt = CalendarEvent {
+            id: "e1".into(),
+            calendar_id: "primary".into(),
+            calendar_name: None,
+            calendar_color: None,
+            summary: "Add stories 1-2".into(),
+            description: Some("Notes".into()),
+            start: "2026-11-16T10:00:00Z".into(),
+            end: "2026-11-16T11:00:00Z".into(),
+            is_all_day: Some(false),
+            html_link: None,
+            linked_task_id: None,
+            priority: Some(2),
+            project_id: Some("proj-1".into()),
+            project_list_id: Some("grp-1".into()),
+        };
+        let json = serde_json::to_string(&evt).unwrap();
+        assert!(json.contains("\"projectListId\":\"grp-1\""));
+        let roundtrip: CalendarEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(roundtrip.project_list_id.as_deref(), Some("grp-1"));
+    }
+
+    #[test]
+    fn mcp_schema_exposes_groups_milestones_and_week_range() {
+        let schema = get_mcp_tools_schema();
+        let arr = schema.as_array().unwrap();
+        let mp = arr.iter().find(|t| t["name"] == "manage_project").unwrap();
+        let actions = mp["inputSchema"]["properties"]["action"]["enum"].as_array().unwrap();
+        assert!(actions.iter().any(|a| a == "project_list"));
+        assert!(actions.iter().any(|a| a == "milestone"));
+
+        let ov = arr.iter().find(|t| t["name"] == "get_overview").unwrap();
+        assert!(ov["inputSchema"]["properties"]["range"].is_object());
     }
 }

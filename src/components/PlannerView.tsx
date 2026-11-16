@@ -65,6 +65,27 @@ interface PlannerViewProps {
   ) => Promise<void>;
   onConvertEventToTask: (evt: CalendarEvent) => Promise<void>;
   onPlanMyDay?: (dateKey: string) => Promise<void>;
+  onUpdateTaskDetails?: (
+    taskId: string,
+    patch: {
+      title?: string;
+      notes?: string;
+      priority?: Priority;
+      projectId?: string;
+      projectListId?: string;
+      dueDate?: string;
+    }
+  ) => Promise<void> | void;
+  onUpdateEventDetails?: (
+    evt: CalendarEvent,
+    patch: {
+      summary?: string;
+      description?: string;
+      priority?: Priority;
+      projectId?: string;
+      projectListId?: string;
+    }
+  ) => Promise<void> | void;
 }
 
 type Mode = 'day' | 'week' | 'month';
@@ -94,6 +115,8 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
   onScheduleTaskAtTime,
   onConvertEventToTask,
   onPlanMyDay,
+  onUpdateTaskDetails,
+  onUpdateEventDetails,
 }) => {
   const [mode, setMode] = useState<Mode>('week');
   const [showUnscheduled, setShowUnscheduled] = useState(false);
@@ -177,9 +200,27 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
     return arr;
   }, [range]);
 
+  const projectMap = useMemo(
+    () => new Map(projects.map((p) => [p.id, p])),
+    [projects]
+  );
+
   const eventsByDay = useMemo(() => {
     const map = new Map<string, CalendarEvent[]>();
     for (const evt of events) {
+      if (mode !== 'day') {
+        const linkedTask = evt.linkedTaskId
+          ? tasks.find((t) => t.id === evt.linkedTaskId)
+          : undefined;
+        const effProj = evt.projectId ?? (linkedTask ? getEffectiveProjectId(tasks, linkedTask) : undefined);
+        if (effProj) {
+          if (selectedProjectIds !== null && !selectedProjectIds.has(effProj)) {
+            continue;
+          }
+        } else if (!includeNoProject) {
+          continue;
+        }
+      }
       const key = toLocalYmd(new Date(evt.start));
       const list = map.get(key) ?? [];
       list.push(evt);
@@ -194,7 +235,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
       map.set(k, list);
     }
     return map;
-  }, [events]);
+  }, [events, includeNoProject, mode, selectedProjectIds, tasks]);
 
   const taskPassesFilters = useCallback(
     (t: TaskItem) => {
@@ -750,6 +791,24 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                           {evt.summary}
                         </p>
 
+                        {(() => {
+                          const eProj = evt.projectId ? projectMap.get(evt.projectId) : undefined;
+                          const eGrp = eProj && evt.projectListId
+                            ? eProj.lists?.find((l) => l.id === evt.projectListId)
+                            : undefined;
+                          return eProj ? (
+                            <div className="flex flex-wrap items-center gap-1">
+                              <span
+                                className="text-[10px] px-1.5 py-0.5 rounded-full font-medium truncate max-w-full"
+                                style={{ backgroundColor: `${eProj.color}22`, color: eProj.color }}
+                              >
+                                {eProj.name}
+                                {eGrp ? ` · ${eGrp.title}` : ''}
+                              </span>
+                            </div>
+                          ) : null;
+                        })()}
+
                         <div className="flex items-center gap-1 pt-0.5 flex-wrap">
                           <button
                             onClick={(e) => {
@@ -759,6 +818,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                                 id: evt.id,
                                 title: evt.summary,
                                 calendarEventId: evt.id,
+                                projectId: evt.projectId,
                                 durationMinutes: getEventDurationMinutes(evt),
                               });
                             }}
@@ -871,6 +931,22 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                         <p className="text-xs text-slate-100 line-clamp-2">
                           {t.title}
                         </p>
+                        {(() => {
+                          const effProj = getEffectiveProjectId(tasks, t);
+                          const tProj = effProj ? projectMap.get(effProj) : undefined;
+                          const tGrp = tProj && t.projectListId
+                            ? tProj.lists?.find((l) => l.id === t.projectListId)
+                            : undefined;
+                          return tProj ? (
+                            <span
+                              className="inline-block text-[10px] px-1.5 py-0.5 rounded-full font-medium truncate max-w-full"
+                              style={{ backgroundColor: `${tProj.color}22`, color: tProj.color }}
+                            >
+                              {tProj.name}
+                              {tGrp ? ` · ${tGrp.title}` : ''}
+                            </span>
+                          ) : null;
+                        })()}
                       </div>
                     );
                   })}
@@ -1092,6 +1168,15 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
           onTimeBlockTask(task, selectedDayKey).then(() => loadRange());
         }}
         onConvertEventToTask={onConvertEventToTask}
+        onUpdateTaskDetails={onUpdateTaskDetails}
+        onUpdateEventDetails={
+          onUpdateEventDetails
+            ? async (evt, patch) => {
+                await onUpdateEventDetails(evt, patch);
+                await loadRange();
+              }
+            : undefined
+        }
       />
     </div>
   );

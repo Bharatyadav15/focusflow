@@ -64,21 +64,23 @@ FocusFlow exposes a Bearer-authenticated HTTP + JSON-RPC 2.0 MCP server at `http
 
 ### Consolidated 11-Tool Surface (`src-tauri/src/ai_tools.rs`)
 
-1. **`get_overview`** — Snapshot of timer, tasks, events, projects, sync & MCP status (`detail: false` default caps at 10 most urgent open tasks + today's events; `detail: true` adds full lists and `focusStats`).
+> **Project Model:** **Projects** organize existing **tasks** and **calendar events** (the smallest actionable work items). **Milestones** are optional outcome checkpoints (e.g. *"Publish ten story summaries"*). **Groups/lists** (`project_list`) are optional containers (e.g. *"Summary sessions"*) that organize tasks and events—not tasks themselves, and not required to attach work to a project. Calendar events require an explicit `start` time; when only a day or flexible time is given, use a dated task (`manage_task` with `due_date`) or ask for times instead of fabricating event times.
+
+1. **`get_overview`** — Snapshot of timer, Today or Week tasks and calendar events (with `projectId`, `projectName`, `projectListId`, `groupTitle`), project summaries, sync & MCP status. Supports `range: "today" | "week"`, `date`, and `detail: true`.
    ```json
-   { "detail": false }
+   { "range": "week", "date": "today", "detail": false }
    ```
-2. **`manage_task`** — Actions: `list`, `add`, `update`, `complete`, `delete`, `subtask` (with `subtask_action`: `add | toggle | remove`), plus fields for `recurrence` (`none | daily | weekdays | weekly`), `blocked_by_task_ids`, `note_link` (Obsidian `.md` / `obsidian://` / `zotero://`), and `dry_run`. (Legacy `action: "time_block"` also still routes for compatibility.)
+2. **`manage_task`** — Actions: `list`, `add`, `update`, `complete`, `delete`, `move`, `subtask` (with `subtask_action`: `add | toggle | remove`), plus `project_id`, optional `project_list_id` (group/list ID validated against `project_id`), `linked_event_id`, `notes`, `recurrence` (`none | daily | weekdays | weekly`), `blocked_by_task_ids`, `note_link`, and `dry_run`.
    ```json
-   { "action": "add", "title": "Write Q4 spec", "priority": 1, "due_date": "today", "duration_minutes": 45, "recurrence": "weekly", "note_link": "Projects/Q4-Spec.md" }
+   { "action": "add", "title": "Write Q4 spec", "priority": 1, "due_date": "today", "project_id": "proj-1", "project_list_id": "plist-1", "notes": "Draft outline first" }
    ```
-3. **`manage_event`** — Actions: `list`, `add`, `reschedule`, `delete`, `convert_to_task`, `find_free_slots`, plus `dry_run`.
+3. **`manage_event`** — Actions: `list`, `add`, `update`, `reschedule`, `delete`, `convert_to_task`, `find_free_slots`, plus `project_id`, optional `project_list_id` (group/list ID validated against `project_id`), `description` (event notes), `priority` (`1`–`5`), `linked_task_id`, and `dry_run`. Requires an explicit `start` time for `add` (never fabricates times).
    ```json
-   { "action": "find_free_slots", "date": "today", "min_minutes": 30 }
+   { "action": "add", "summary": "Add stories 1-2", "start": "2026-11-17 10:00", "duration_minutes": 60, "project_id": "proj-1", "project_list_id": "plist-1", "description": "Focus on folklore motifs" }
    ```
-4. **`manage_project`** — Actions: `list`, `save`, `delete`, `milestone` (with `milestone_action`: `add | toggle | remove` and `required_task_ids` task-completion gating), plus `dry_run`.
+4. **`manage_project`** — Actions: `list` (pass `project_id` or `name_match` to retrieve groups, milestones, tasks, and events), `save` (supports `description` / `notes`), `delete`, `milestone` (`milestone_action`: `add | toggle | remove | update`, optional `required_task_ids` gating), and `project_list` (`list_action`: `add | rename | move | delete`, optional `parent_list_id`; deleting a group safely unassigns its tasks/events without deleting them), plus `dry_run`.
    ```json
-   { "action": "save", "name": "FocusFlow v2", "color": "#6366f1" }
+   { "action": "project_list", "project_id": "proj-1", "list_action": "add", "list_title": "Summary sessions" }
    ```
 5. **`manage_template`** — Actions: `list`, `save`, `apply`, `delete`, plus `dry_run`.
    ```json

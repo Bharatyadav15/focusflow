@@ -76,6 +76,7 @@ pub fn default_demo_events_for_today() -> Vec<CalendarEvent> {
             linked_task_id: None,
             priority: Some(1),
             project_id: None,
+            project_list_id: None,
         },
         CalendarEvent {
             id: "demo-evt-2".to_string(),
@@ -91,6 +92,7 @@ pub fn default_demo_events_for_today() -> Vec<CalendarEvent> {
             linked_task_id: None,
             priority: Some(2),
             project_id: None,
+            project_list_id: None,
         },
     ]
 }

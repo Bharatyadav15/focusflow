@@ -15,6 +15,7 @@ import type {
   CalendarEvent,
   EventMetadata,
   Priority,
+  Project,
   TaskItem,
   TimerState,
 } from '../../types';
@@ -24,6 +25,7 @@ import { extractYmd, formatTime } from '../../utils/time';
 interface DaySchedulePanelProps {
   sortedEvents: CalendarEvent[];
   taskMap: Map<string, TaskItem>;
+  projectMap?: Map<string, Project>;
   timer: TimerState;
   loadingEvents: boolean;
   sortEventsByPriority: boolean;
@@ -49,6 +51,7 @@ interface DaySchedulePanelProps {
 export const DaySchedulePanel: React.FC<DaySchedulePanelProps> = ({
   sortedEvents,
   taskMap,
+  projectMap,
   timer,
   loadingEvents,
   sortEventsByPriority,
@@ -126,6 +129,10 @@ export const DaySchedulePanel: React.FC<DaySchedulePanelProps> = ({
             const linkedTask = evt.linkedTaskId
               ? taskMap.get(evt.linkedTaskId)
               : undefined;
+            const proj = evt.projectId ? projectMap?.get(evt.projectId) : undefined;
+            const grp = proj && evt.projectListId
+              ? proj.lists?.find((l) => l.id === evt.projectListId)
+              : undefined;
             const pMeta = getPriorityMeta(evt.priority);
             const isActive =
               (timer.activeTarget?.type === 'event' &&
@@ -182,6 +189,18 @@ export const DaySchedulePanel: React.FC<DaySchedulePanelProps> = ({
                           {evt.calendarName}
                         </span>
                       )}
+                      {proj && (
+                        <span
+                          className="text-[11px] px-2 py-0.5 rounded-full font-medium"
+                          style={{
+                            backgroundColor: `${proj.color}22`,
+                            color: proj.color,
+                          }}
+                        >
+                          {proj.name}
+                          {grp ? ` · ${grp.title}` : ''}
+                        </span>
+                      )}
                     </div>
                     <h4
                       onClick={() => onSelectEvent?.(evt)}
@@ -234,6 +253,7 @@ export const DaySchedulePanel: React.FC<DaySchedulePanelProps> = ({
                             id: evt.id,
                             title: evt.summary,
                             calendarEventId: evt.id,
+                            projectId: evt.projectId,
                             linkedTaskId: linkedTask?.id,
                             durationMinutes: getEventDurationMinutes(evt),
                           },

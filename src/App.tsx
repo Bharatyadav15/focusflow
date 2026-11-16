@@ -139,6 +139,8 @@ export function App() {
     deleteSubtask,
     updateSessionNote,
     setEventMetadata,
+    updateTaskDetails,
+    updateEventDetails,
     rescheduleTask,
     rescheduleEvent,
     fetchEventsForRange,
@@ -388,6 +390,8 @@ export function App() {
       onScheduleTaskAtTime={scheduleTaskAtTime}
       onConvertEventToTask={convertEventToTask}
       onPlanMyDay={planMyDay}
+      onUpdateTaskDetails={updateTaskDetails}
+      onUpdateEventDetails={updateEventDetails}
     />
   );
 
@@ -552,6 +556,8 @@ export function App() {
             onToggleSubtask={toggleSubtask}
             onDeleteSubtask={deleteSubtask}
             onSetEventMetadata={setEventMetadata}
+            onUpdateTaskDetails={updateTaskDetails}
+            onUpdateEventDetails={updateEventDetails}
             onRescheduleTask={rescheduleTask}
             onRescheduleEvent={rescheduleEvent}
             onTimeBlockTask={timeBlockTask}
@@ -580,6 +586,8 @@ export function App() {
             onMoveTask={moveTask}
             onSetTaskMetadata={setTaskMetadata}
             onSetEventMetadata={setEventMetadata}
+            onUpdateTaskDetails={updateTaskDetails}
+            onUpdateEventDetails={updateEventDetails}
             onLinkTaskToEvent={linkTaskToEvent}
             onCreateEvent={async ({ summary, startIso, endIso, priority, projectId, projectListId }) => {
               if (!window.electronAPI) return;

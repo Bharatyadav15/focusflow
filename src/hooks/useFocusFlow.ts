@@ -482,14 +482,116 @@ export function useFocusFlow(isFloating = false) {
       const fetched = await api.fetchCalendarEvents(timeMin, timeMax);
       return fetched.map((e) => {
         const meta = data.eventMetadata[e.id];
+        const matchedTask = data.tasks.find(
+          (t) =>
+            t.linkedEventId === e.id ||
+            t.calendarEventId === e.id ||
+            data.taskEventLinks[t.id] === e.id
+        );
         return {
           ...e,
-          priority: meta?.priority,
-          projectId: meta?.projectId,
+          linkedTaskId: e.linkedTaskId ?? matchedTask?.id,
+          priority: meta?.priority ?? e.priority,
+          projectId: meta?.projectId ?? e.projectId ?? matchedTask?.projectId,
+          projectListId:
+            meta?.projectListId ?? e.projectListId ?? matchedTask?.projectListId,
         };
       });
     },
-    [api, data.eventMetadata]
+    [api, data.eventMetadata, data.taskEventLinks, data.tasks]
+  );
+
+  const updateTaskDetails = useCallback(
+    async (
+      taskId: string,
+      patch: {
+        title?: string;
+        notes?: string;
+        priority?: Priority;
+        projectId?: string;
+        projectListId?: string;
+        dueDate?: string;
+      }
+    ) => {
+      const target = data.tasks.find((t) => t.id === taskId);
+      if (!target) return;
+      const updated = data.tasks.map((t) =>
+        t.id === taskId
+          ? {
+              ...t,
+              ...(patch.title !== undefined ? { title: patch.title } : {}),
+              ...(patch.notes !== undefined ? { notes: patch.notes || undefined } : {}),
+              ...(patch.priority !== undefined ? { priority: patch.priority } : {}),
+              projectId: patch.projectId,
+              projectListId: patch.projectListId,
+              dueDate: patch.dueDate || undefined,
+            }
+          : t
+      );
+      await saveTasks(updated);
+      if (target.googleTaskId && target.googleTaskListId && api) {
+        api
+          .updateGoogleTask(target.googleTaskListId, target.googleTaskId, {
+            title: patch.title,
+            notes: patch.notes,
+            due: patch.dueDate || undefined,
+          })
+          .catch(() => {});
+      }
+      notify(`Updated "${patch.title ?? target.title}"`);
+    },
+    [api, data.tasks, notify, saveTasks]
+  );
+
+  const updateEventDetails = useCallback(
+    async (
+      evt: CalendarEvent,
+      patch: {
+        summary?: string;
+        description?: string;
+        priority?: Priority;
+        projectId?: string;
+        projectListId?: string;
+      }
+    ) => {
+      if (patch.summary !== undefined && patch.summary !== evt.summary && api) {
+        try {
+          await api.updateCalendarEvent({
+            calendarId: evt.calendarId || 'primary',
+            eventId: evt.id,
+            summary: patch.summary,
+          });
+        } catch (err) {
+          notify(
+            err instanceof Error ? err.message : 'Failed to update calendar event'
+          );
+        }
+      }
+      await setEventMetadata(evt.id, {
+        priority: patch.priority,
+        projectId: patch.projectId,
+        projectListId: patch.projectListId,
+      });
+      setEvents((prev) =>
+        prev.map((e) =>
+          e.id === evt.id
+            ? {
+                ...e,
+                ...(patch.summary !== undefined ? { summary: patch.summary } : {}),
+                ...(patch.description !== undefined
+                  ? { description: patch.description || undefined }
+                  : {}),
+                priority: patch.priority,
+                projectId: patch.projectId,
+                projectListId: patch.projectListId,
+              }
+            : e
+        )
+      );
+      api?.notifyDataUpdated();
+      notify(`Updated "${patch.summary ?? evt.summary}"`);
+    },
+    [api, notify, setEventMetadata]
   );
 
   const saveSettings = useCallback(
@@ -1341,6 +1443,8 @@ export function useFocusFlow(isFloating = false) {
     toggleSubtask,
     deleteSubtask,
     setEventMetadata,
+    updateTaskDetails,
+    updateEventDetails,
     rescheduleTask,
     rescheduleEvent,
     fetchEventsForRange,

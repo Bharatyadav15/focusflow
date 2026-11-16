@@ -65,6 +65,27 @@ interface ProjectsViewProps {
     projectId?: string;
     projectListId?: string;
   }) => Promise<void>;
+  onUpdateTaskDetails?: (
+    taskId: string,
+    patch: {
+      title?: string;
+      notes?: string;
+      priority?: Priority;
+      projectId?: string;
+      projectListId?: string;
+      dueDate?: string;
+    }
+  ) => Promise<void> | void;
+  onUpdateEventDetails?: (
+    evt: CalendarEvent,
+    patch: {
+      summary?: string;
+      description?: string;
+      priority?: Priority;
+      projectId?: string;
+      projectListId?: string;
+    }
+  ) => Promise<void> | void;
   onStartFocus: (target: TimerState['activeTarget']) => void;
 }
 
@@ -94,6 +115,8 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
   onSetEventMetadata,
   onLinkTaskToEvent,
   onCreateEvent,
+  onUpdateTaskDetails,
+  onUpdateEventDetails,
   onStartFocus,
 }) => {
   const [selectedProjectId, setSelectedProjectId] = useState<string>(
@@ -113,11 +136,12 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [rangeEvents, setRangeEvents] = useState<CalendarEvent[]>(events);
+  const [newGroupTitle, setNewGroupTitle] = useState('');
   const [sublistParentId, setSublistParentId] = useState<string | null>(null);
   const [sublistTitle, setSublistTitle] = useState('');
   const [renamingListId, setRenamingListId] = useState<string | null>(null);
   const [renameListTitle, setRenameListTitle] = useState('');
-  const [collapsedMilestones, setCollapsedMilestones] = useState<Set<string>>(() => new Set());
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set());
   const [detailTarget, setDetailTarget] = useState<DetailModalTarget | null>(null);
   const [addingEntryListId, setAddingEntryListId] = useState<string | null>(null);
   const [entryKind, setEntryKind] = useState<'task' | 'event'>('task');
@@ -203,76 +227,116 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
     [activeProject, enrichedEvents]
   );
 
-  type MilestoneNode = Project['milestones'][number];
-
-  const unifiedMilestones = useMemo<MilestoneNode[]>(() => {
-    if (!activeProject) return [];
-    const base = [...activeProject.milestones];
-    const seen = new Set(base.map((m) => m.id));
-    for (const l of activeProject.lists ?? []) {
-      if (!seen.has(l.id)) {
-        seen.add(l.id);
-        base.push({
-          id: l.id,
-          title: l.title,
-          done: false,
-          parentId: l.parentListId,
-        });
-      }
-    }
-    return base;
-  }, [activeProject]);
-
-  const flattenedMilestones = useMemo(() => {
-    const byParent = new Map<string | undefined, MilestoneNode[]>();
-    for (const m of unifiedMilestones) {
-      const pid = m.parentId && unifiedMilestones.some((x) => x.id === m.parentId) ? m.parentId : undefined;
+  const flattenedGroups = useMemo(() => {
+    const lists = activeProject?.lists ?? [];
+    const byParent = new Map<string | undefined, ProjectList[]>();
+    for (const l of lists) {
+      const pid = l.parentListId && lists.some((x) => x.id === l.parentListId) ? l.parentListId : undefined;
       const arr = byParent.get(pid) ?? [];
-      arr.push(m);
+      arr.push(l);
       byParent.set(pid, arr);
     }
-    const out: { milestone: MilestoneNode; depth: number; hasChildren: boolean }[] = [];
+    const out: { group: ProjectList; depth: number; hasChildren: boolean }[] = [];
     const walk = (pid: string | undefined, depth: number) => {
-      for (const m of byParent.get(pid) ?? []) {
-        const kids = byParent.get(m.id) ?? [];
-        out.push({ milestone: m, depth, hasChildren: kids.length > 0 });
-        if (kids.length > 0 && !collapsedMilestones.has(m.id)) {
-          walk(m.id, depth + 1);
+      for (const l of byParent.get(pid) ?? []) {
+        const kids = byParent.get(l.id) ?? [];
+        out.push({ group: l, depth, hasChildren: kids.length > 0 });
+        if (kids.length > 0 && !collapsedGroups.has(l.id)) {
+          walk(l.id, depth + 1);
         }
       }
     };
     walk(undefined, 0);
     return out;
-  }, [unifiedMilestones, collapsedMilestones]);
+  }, [activeProject?.lists, collapsedGroups]);
 
-  const handleRenameMilestone = (milestoneId: string) => {
+  const handleAddGroup = (e: React.FormEvent, parentListId?: string) => {
+    e.preventDefault();
+    if (!activeProject) return;
+    const title = (parentListId ? sublistTitle : newGroupTitle).trim();
+    if (!title) return;
+    const created: ProjectList = {
+      id: `plist-${Date.now()}`,
+      title,
+      parentListId,
+      createdAt: new Date().toISOString(),
+    };
+    onSaveProjects(
+      projects.map((p) =>
+        p.id === activeProject.id ? { ...p, lists: [...(p.lists ?? []), created] } : p
+      )
+    );
+    if (parentListId) {
+      setCollapsedGroups((prev) => {
+        const next = new Set(prev);
+        next.delete(parentListId);
+        return next;
+      });
+      setSublistParentId(null);
+      setSublistTitle('');
+    } else {
+      setNewGroupTitle('');
+    }
+  };
+
+  const handleRenameGroup = (groupId: string) => {
     if (!activeProject || !renameListTitle.trim()) {
       setRenamingListId(null);
       return;
     }
     const nextTitle = renameListTitle.trim();
     onSaveProjects(
-      projects.map((p) => {
-        if (p.id !== activeProject.id) return p;
-        const inMilestones = p.milestones.some((m) => m.id === milestoneId);
-        return {
-          ...p,
-          milestones: inMilestones
-            ? p.milestones.map((m) => (m.id === milestoneId ? { ...m, title: nextTitle } : m))
-            : [
-                ...p.milestones,
-                { id: milestoneId, title: nextTitle, done: false },
-              ],
-          lists: (p.lists ?? []).map((l) =>
-            l.id === milestoneId ? { ...l, title: nextTitle } : l
-          ),
-        };
-      })
+      projects.map((p) =>
+        p.id === activeProject.id
+          ? {
+              ...p,
+              lists: (p.lists ?? []).map((l) =>
+                l.id === groupId ? { ...l, title: nextTitle } : l
+              ),
+            }
+          : p
+      )
     );
     setRenamingListId(null);
   };
 
-  const handleAddEntryToMilestone = async (e: React.FormEvent, milestoneId: string) => {
+  const handleDeleteGroup = (groupId: string) => {
+    if (!activeProject) return;
+    const target = (activeProject.lists ?? []).find((l) => l.id === groupId);
+    onSaveProjects(
+      projects.map((p) =>
+        p.id === activeProject.id
+          ? {
+              ...p,
+              lists: (p.lists ?? [])
+                .filter((l) => l.id !== groupId)
+                .map((l) =>
+                  l.parentListId === groupId ? { ...l, parentListId: target?.parentListId } : l
+                ),
+            }
+          : p
+      )
+    );
+    // Safe unassign: never delete underlying tasks or calendar events when a group is deleted
+    if (tasks.some((t) => t.projectListId === groupId)) {
+      onSaveTasks(
+        tasks.map((t) => (t.projectListId === groupId ? { ...t, projectListId: undefined } : t))
+      );
+    }
+    if (onSetEventMetadata) {
+      for (const evt of projectEvents) {
+        if (evt.projectListId === groupId) {
+          onSetEventMetadata(evt.id, {
+            ...(eventMetadata[evt.id] ?? {}),
+            projectId: activeProject.id,
+            projectListId: undefined,
+          });
+        }
+      }
+    }
+  };
+
+  const handleAddEntryToGroup = async (e: React.FormEvent, groupId: string) => {
     e.preventDefault();
     if (!activeProject || !entryTitle.trim()) return;
     if (entryKind === 'task') {
@@ -280,7 +344,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
         id: `task-${Date.now()}`,
         title: entryTitle.trim(),
         projectId: activeProject.id,
-        projectListId: milestoneId,
+        projectListId: groupId,
         priority: entryPriority,
         completed: false,
         estimatedPomodoros: 1,
@@ -297,7 +361,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
         endIso,
         priority: entryPriority,
         projectId: activeProject.id,
-        projectListId: milestoneId,
+        projectListId: groupId,
       });
     }
     setEntryTitle('');
@@ -338,9 +402,9 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
     setNewTaskDuration('');
   };
 
-  const handleAddMilestone = (e: React.FormEvent, parentId?: string) => {
+  const handleAddMilestone = (e: React.FormEvent) => {
     e.preventDefault();
-    const title = (parentId ? sublistTitle : newMilestone).trim();
+    const title = newMilestone.trim();
     if (!title || !activeProject) return;
     const updated = projects.map((p) =>
       p.id === activeProject.id
@@ -352,24 +416,13 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                 id: `m-${Date.now()}`,
                 title,
                 done: false,
-                ...(parentId ? { parentId } : {}),
               },
             ],
           }
         : p
     );
     onSaveProjects(updated);
-    if (parentId) {
-      setCollapsedMilestones((prev) => {
-        const next = new Set(prev);
-        next.delete(parentId);
-        return next;
-      });
-      setSublistParentId(null);
-      setSublistTitle('');
-    } else {
-      setNewMilestone('');
-    }
+    setNewMilestone('');
   };
 
   const toggleMilestone = (milestoneId: string) => {
@@ -413,30 +466,15 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
 
   const deleteMilestone = (milestoneId: string) => {
     if (!activeProject) return;
-    const target = unifiedMilestones.find((m) => m.id === milestoneId);
     const updated = projects.map((p) =>
       p.id === activeProject.id
         ? {
             ...p,
-            milestones: p.milestones
-              .filter((m) => m.id !== milestoneId)
-              .map((m) =>
-                m.parentId === milestoneId ? { ...m, parentId: target?.parentId } : m
-              ),
-            lists: (p.lists ?? [])
-              .filter((l) => l.id !== milestoneId)
-              .map((l) =>
-                l.parentListId === milestoneId ? { ...l, parentListId: target?.parentId } : l
-              ),
+            milestones: p.milestones.filter((m) => m.id !== milestoneId),
           }
         : p
     );
     onSaveProjects(updated);
-    if (tasks.some((t) => t.projectListId === milestoneId)) {
-      onSaveTasks(
-        tasks.map((t) => (t.projectListId === milestoneId ? { ...t, projectListId: undefined } : t))
-      );
-    }
   };
 
   const startEditingProject = (p: Project) => {
@@ -654,58 +692,205 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                 </form>
               )}
 
-              <form onSubmit={(e) => handleAddMilestone(e)} className="flex gap-2 mb-3">
+              <form onSubmit={handleAddMilestone} className="flex gap-2 mb-3">
                 <input
                   type="text"
                   value={newMilestone}
                   onChange={(e) => setNewMilestone(e.target.value)}
-                  placeholder="Add milestone / list..."
+                  placeholder="Add milestone checkpoint (e.g. Publish ten story summaries)..."
                   className="flex-1 rounded-xl bg-surface-900 border border-surface-600 px-3 py-1.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500"
                 />
                 <button
                   type="submit"
-                  className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-indigo-500 hover:bg-indigo-400 text-xs font-medium text-white"
+                  className="px-3 py-1.5 rounded-xl bg-surface-700 hover:bg-surface-600 text-xs font-medium text-slate-200"
                 >
-                  <Plus className="w-3.5 h-3.5" /> Add Milestone
+                  Add Milestone
                 </button>
               </form>
 
-              {flattenedMilestones.length === 0 ? (
-                <p className="text-xs text-slate-500 py-2">
-                  No milestones yet. Add a milestone above to organize sublists, tasks, and calendar events.
-                </p>
-              ) : (
-                <div className="space-y-2.5">
-                  {flattenedMilestones.map(({ milestone: m, depth, hasChildren }) => {
+              <div className="space-y-1.5">
+                {activeProject.milestones.length === 0 ? (
+                  <p className="text-xs text-slate-500 py-1">
+                    No milestones yet. Milestones are optional outcome checkpoints.
+                  </p>
+                ) : (
+                  activeProject.milestones.map((m) => {
                     const reqIds = m.requiredTaskIds ?? [];
                     const isGated = reqIds.length > 0;
                     const doneCount = reqIds.filter((tid) =>
                       tasks.find((t) => t.id === tid)?.completed
                     ).length;
-                    const listTasks = projectTasks.filter((t) => t.projectListId === m.id);
-                    const listEvents = projectEvents.filter((e) => e.projectListId === m.id);
-                    const isExpanded = !collapsedMilestones.has(m.id);
 
                     return (
                       <div
                         key={m.id}
+                        className="rounded-lg hover:bg-surface-700/40 transition p-2 space-y-2"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <button
+                            type="button"
+                            onClick={() => toggleMilestone(m.id)}
+                            disabled={isGated}
+                            className={`flex items-center gap-2.5 text-left flex-1 min-w-0 ${
+                              isGated ? 'cursor-not-allowed' : ''
+                            }`}
+                            title={
+                              isGated
+                                ? `Auto-completed when all ${reqIds.length} linked task(s) finish`
+                                : 'Toggle milestone'
+                            }
+                          >
+                            {m.done ? (
+                              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                            ) : isGated ? (
+                              <Lock className="w-4 h-4 text-amber-400 shrink-0" />
+                            ) : (
+                              <Circle className="w-4 h-4 text-slate-400 shrink-0" />
+                            )}
+                            <span
+                              className={`text-sm truncate ${
+                                m.done
+                                  ? 'line-through text-slate-500'
+                                  : 'text-slate-200'
+                              }`}
+                            >
+                              {m.title}
+                            </span>
+                            {isGated && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 shrink-0">
+                                Gated: {doneCount}/{reqIds.length} tasks
+                              </span>
+                            )}
+                          </button>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setGatingMilestoneId(
+                                  gatingMilestoneId === m.id ? null : m.id
+                                )
+                              }
+                              className={`px-2 py-0.5 rounded text-[11px] flex items-center gap-1 transition ${
+                                gatingMilestoneId === m.id || isGated
+                                  ? 'bg-indigo-500/20 text-indigo-300'
+                                  : 'bg-surface-700 text-slate-400 hover:text-slate-200'
+                              }`}
+                              title="Link tasks that must be completed for this milestone"
+                            >
+                              <Lock className="w-3 h-3" />
+                              Gate
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => deleteMilestone(m.id)}
+                              className="p-1 text-slate-500 hover:text-rose-400 shrink-0"
+                              title="Delete milestone"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+
+                        {gatingMilestoneId === m.id && (
+                          <div className="pl-6 pt-1 border-t border-surface-700/70 space-y-1">
+                            <div className="text-[11px] text-slate-400">
+                              Select project tasks required to unlock this milestone:
+                            </div>
+                            {projectTasks.length === 0 ? (
+                              <div className="text-[11px] text-slate-500">
+                                Add tasks to this project below first.
+                              </div>
+                            ) : (
+                              <div className="flex flex-wrap gap-1.5">
+                                {projectTasks.map((pt) => {
+                                  const linked = reqIds.includes(pt.id);
+                                  return (
+                                    <button
+                                      key={pt.id}
+                                      type="button"
+                                      onClick={() =>
+                                        toggleMilestoneGateTask(m.id, pt.id)
+                                      }
+                                      className={`text-[11px] px-2 py-0.5 rounded-full border transition ${
+                                        linked
+                                          ? 'bg-indigo-500/25 border-indigo-400 text-indigo-200'
+                                          : 'bg-surface-900 border-surface-600 text-slate-400 hover:text-slate-200'
+                                      }`}
+                                    >
+                                      {pt.completed ? '✓ ' : ''}
+                                      {pt.title}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            {/* Optional Project Groups / Lists (Containers for Tasks + Calendar Events) */}
+            <div className="rounded-2xl bg-surface-800 border border-surface-600/70 p-5 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
+                  <ListPlus className="w-4 h-4 text-indigo-400" />
+                  Groups / Lists ({(activeProject.lists ?? []).length})
+                  <span className="text-[11px] font-normal text-slate-400">(optional)</span>
+                </h3>
+                <form
+                  onSubmit={(e) => handleAddGroup(e)}
+                  className="flex items-center gap-2"
+                >
+                  <input
+                    type="text"
+                    value={newGroupTitle}
+                    onChange={(e) => setNewGroupTitle(e.target.value)}
+                    placeholder="New group (e.g. Summary sessions)..."
+                    className="rounded-xl bg-surface-900 border border-surface-600 px-3 py-1.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                  />
+                  <button
+                    type="submit"
+                    className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-indigo-500 hover:bg-indigo-400 text-xs font-medium text-white"
+                  >
+                    <Plus className="w-3.5 h-3.5" /> Add Group
+                  </button>
+                </form>
+              </div>
+
+              {flattenedGroups.length === 0 ? (
+                <p className="text-xs text-slate-500 py-1">
+                  No groups yet. Groups are optional containers to organize tasks and calendar events.
+                </p>
+              ) : (
+                <div className="space-y-3">
+                  {flattenedGroups.map(({ group: g, depth, hasChildren }) => {
+                    const listTasks = projectTasks.filter((t) => t.projectListId === g.id);
+                    const listEvents = projectEvents.filter((e) => e.projectListId === g.id);
+                    const isExpanded = !collapsedGroups.has(g.id);
+
+                    return (
+                      <div
+                        key={g.id}
                         style={{ marginLeft: depth * 20 }}
-                        className="rounded-xl bg-surface-900/60 border border-surface-700/80 p-3 space-y-2"
+                        className="rounded-xl bg-surface-900/60 border border-surface-700/80 p-3.5 space-y-2.5"
                       >
                         <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div className="flex items-center gap-2 flex-1 min-w-0">
+                          <div className="flex items-center gap-2 min-w-0">
                             {hasChildren ? (
                               <button
-                                type="button"
                                 onClick={() =>
-                                  setCollapsedMilestones((prev) => {
+                                  setCollapsedGroups((prev) => {
                                     const next = new Set(prev);
-                                    if (next.has(m.id)) next.delete(m.id);
-                                    else next.add(m.id);
+                                    if (next.has(g.id)) next.delete(g.id);
+                                    else next.add(g.id);
                                     return next;
                                   })
                                 }
-                                className="text-slate-400 hover:text-slate-200 shrink-0"
+                                className="text-slate-400 hover:text-slate-200"
                               >
                                 {isExpanded ? (
                                   <ChevronDown className="w-4 h-4" />
@@ -714,34 +899,13 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                                 )}
                               </button>
                             ) : (
-                              <span className="w-4 shrink-0" />
+                              <span className="w-4" />
                             )}
-                            <button
-                              type="button"
-                              onClick={() => toggleMilestone(m.id)}
-                              disabled={isGated}
-                              className={`shrink-0 ${
-                                isGated ? 'cursor-not-allowed' : ''
-                              }`}
-                              title={
-                                isGated
-                                  ? `Auto-completed when all ${reqIds.length} linked task(s) finish`
-                                  : 'Toggle milestone'
-                              }
-                            >
-                              {m.done ? (
-                                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                              ) : isGated ? (
-                                <Lock className="w-4 h-4 text-amber-400" />
-                              ) : (
-                                <Circle className="w-4 h-4 text-slate-400" />
-                              )}
-                            </button>
-                            {renamingListId === m.id ? (
+                            {renamingListId === g.id ? (
                               <form
                                 onSubmit={(e) => {
                                   e.preventDefault();
-                                  handleRenameMilestone(m.id);
+                                  handleRenameGroup(g.id);
                                 }}
                                 className="flex items-center gap-1.5"
                               >
@@ -759,42 +923,29 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                                 </button>
                               </form>
                             ) : (
-                              <span
-                                className={`text-sm font-semibold truncate ${
-                                  m.done
-                                    ? 'line-through text-slate-500'
-                                    : 'text-slate-100'
-                                }`}
-                              >
-                                {m.title}
+                              <span className="text-sm font-semibold text-slate-100">
+                                {g.title}
                               </span>
                             )}
-                            <span className="text-[11px] text-slate-400 shrink-0">
+                            <span className="text-[11px] text-slate-400">
                               {listTasks.length} tasks · {listEvents.length} events
                             </span>
-                            {isGated && (
-                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 shrink-0">
-                                Gated: {doneCount}/{reqIds.length} tasks
-                              </span>
-                            )}
                           </div>
-                          <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                          <div className="flex flex-wrap items-center gap-1.5">
                             {depth < 2 && (
                               <button
-                                type="button"
                                 onClick={() => {
-                                  setSublistParentId(sublistParentId === m.id ? null : m.id);
+                                  setSublistParentId(sublistParentId === g.id ? null : g.id);
                                   setSublistTitle('');
                                 }}
                                 className="px-2 py-1 rounded-lg bg-surface-800 hover:bg-surface-700 text-[11px] text-slate-300"
                               >
-                                + Sublist
+                                + Subgroup
                               </button>
                             )}
                             <button
-                              type="button"
                               onClick={() => {
-                                setAddingEntryListId(addingEntryListId === m.id ? null : m.id);
+                                setAddingEntryListId(addingEntryListId === g.id ? null : g.id);
                                 setEntryKind('task');
                                 setEntryTitle('');
                               }}
@@ -803,68 +954,49 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                               + Entry
                             </button>
                             <button
-                              type="button"
-                              onClick={() =>
-                                setGatingMilestoneId(
-                                  gatingMilestoneId === m.id ? null : m.id
-                                )
-                              }
-                              className={`px-2 py-1 rounded-lg text-[11px] flex items-center gap-1 transition ${
-                                gatingMilestoneId === m.id || isGated
-                                  ? 'bg-indigo-500/20 text-indigo-300'
-                                  : 'bg-surface-800 text-slate-400 hover:text-slate-200'
-                              }`}
-                              title="Link tasks that must be completed for this milestone"
-                            >
-                              <Lock className="w-3 h-3" />
-                              Gate
-                            </button>
-                            <button
-                              type="button"
                               onClick={() => {
-                                setRenamingListId(m.id);
-                                setRenameListTitle(m.title);
+                                setRenamingListId(g.id);
+                                setRenameListTitle(g.title);
                               }}
                               className="p-1 text-slate-400 hover:text-slate-200"
-                              title="Rename milestone"
+                              title="Rename group"
                             >
                               <Pencil className="w-3.5 h-3.5" />
                             </button>
                             <button
-                              type="button"
-                              onClick={() => deleteMilestone(m.id)}
+                              onClick={() => handleDeleteGroup(g.id)}
                               className="p-1 text-slate-500 hover:text-rose-400"
-                              title="Delete milestone"
+                              title="Delete group (keeps tasks and events)"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>
                           </div>
                         </div>
 
-                        {sublistParentId === m.id && (
+                        {sublistParentId === g.id && (
                           <form
-                            onSubmit={(e) => handleAddMilestone(e, m.id)}
+                            onSubmit={(e) => handleAddGroup(e, g.id)}
                             className="flex items-center gap-2 pl-6"
                           >
                             <input
                               autoFocus
                               value={sublistTitle}
                               onChange={(e) => setSublistTitle(e.target.value)}
-                              placeholder={`New sublist under "${m.title}"...`}
+                              placeholder={`New subgroup under "${g.title}"...`}
                               className="flex-1 rounded-lg bg-surface-800 border border-surface-600 px-2.5 py-1 text-xs text-slate-100"
                             />
                             <button
                               type="submit"
                               className="px-2.5 py-1 rounded-lg bg-indigo-500 text-white text-xs"
                             >
-                              Add Sublist
+                              Add Subgroup
                             </button>
                           </form>
                         )}
 
-                        {addingEntryListId === m.id && (
+                        {addingEntryListId === g.id && (
                           <form
-                            onSubmit={(e) => handleAddEntryToMilestone(e, m.id)}
+                            onSubmit={(e) => handleAddEntryToGroup(e, g.id)}
                             className="flex flex-wrap items-center gap-2 p-2.5 rounded-xl bg-surface-800 border border-surface-600"
                           >
                             <select
@@ -926,43 +1058,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                           </form>
                         )}
 
-                        {gatingMilestoneId === m.id && (
-                          <div className="pl-6 pt-1 border-t border-surface-700/70 space-y-1">
-                            <div className="text-[11px] text-slate-400">
-                              Select project tasks required to unlock this milestone:
-                            </div>
-                            {projectTasks.length === 0 ? (
-                              <div className="text-[11px] text-slate-500">
-                                Add tasks to this project below first.
-                              </div>
-                            ) : (
-                              <div className="flex flex-wrap gap-1.5">
-                                {projectTasks.map((pt) => {
-                                  const linked = reqIds.includes(pt.id);
-                                  return (
-                                    <button
-                                      key={pt.id}
-                                      type="button"
-                                      onClick={() =>
-                                        toggleMilestoneGateTask(m.id, pt.id)
-                                      }
-                                      className={`text-[11px] px-2 py-0.5 rounded-full border transition ${
-                                        linked
-                                          ? 'bg-indigo-500/25 border-indigo-400 text-indigo-200'
-                                          : 'bg-surface-900 border-surface-600 text-slate-400 hover:text-slate-200'
-                                      }`}
-                                    >
-                                      {pt.completed ? '✓ ' : ''}
-                                      {pt.title}
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                            )}
-                          </div>
-                        )}
-
-                        {onSetEventMetadata && enrichedEvents.some((e) => e.projectListId !== m.id) && (
+                        {onSetEventMetadata && enrichedEvents.some((e) => e.projectListId !== g.id) && (
                           <div className="flex items-center gap-2 pl-6">
                             <select
                               value=""
@@ -971,14 +1067,14 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                                 onSetEventMetadata(e.target.value, {
                                   ...(eventMetadata[e.target.value] ?? {}),
                                   projectId: activeProject.id,
-                                  projectListId: m.id,
+                                  projectListId: g.id,
                                 });
                               }}
                               className="rounded-lg bg-surface-800 border border-surface-700 px-2 py-1 text-[11px] text-slate-300"
                             >
-                              <option value="">+ Assign existing calendar event to this milestone...</option>
+                              <option value="">+ Assign existing calendar event to this group...</option>
                               {enrichedEvents
-                                .filter((ev) => ev.projectListId !== m.id)
+                                .filter((ev) => ev.projectListId !== g.id)
                                 .map((ev) => (
                                   <option key={ev.id} value={ev.id}>
                                     {ev.isAllDay ? extractYmd(ev.start) : `${extractYmd(ev.start)} ${formatTime(ev.start)}`} · {ev.summary}
@@ -1006,11 +1102,6 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                                     <span className="text-xs font-medium text-slate-100 truncate">
                                       {evt.summary}
                                     </span>
-                                    {evt.linkedTaskId && (
-                                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 flex items-center gap-1 shrink-0">
-                                        <Link2 className="w-2.5 h-2.5" /> Linked
-                                      </span>
-                                    )}
                                   </div>
                                   <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
                                     {onSetEventMetadata && (
@@ -1020,7 +1111,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                                           onSetEventMetadata(evt.id, {
                                             ...(eventMetadata[evt.id] ?? {}),
                                             projectId: activeProject.id,
-                                            projectListId: m.id,
+                                            projectListId: g.id,
                                             priority: Number(e.target.value) as Priority,
                                           })
                                         }
@@ -1056,7 +1147,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                                           })
                                         }
                                         className="p-1 text-slate-500 hover:text-rose-400"
-                                        title="Remove event from this milestone"
+                                        title="Remove event from this group"
                                       >
                                         <X className="w-3.5 h-3.5" />
                                       </button>
@@ -1094,11 +1185,6 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                                     >
                                       {t.title}
                                     </span>
-                                    {t.linkedEventId && (
-                                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 flex items-center gap-1 shrink-0">
-                                        <Link2 className="w-2.5 h-2.5" /> Linked
-                                      </span>
-                                    )}
                                   </div>
                                   <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
                                     {onSetTaskMetadata && (
@@ -1347,7 +1433,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                           )}
                           {effDone}/{effEst} pomos
                           {hasChildren ? ` (${openChildCount}/${childCount} open)` : ''}
-                          {onSetTaskMetadata && unifiedMilestones.length > 0 && (
+                          {onSetTaskMetadata && (activeProject.lists ?? []).length > 0 && (
                             <select
                               value={task.projectListId ?? ''}
                               onChange={(e) =>
@@ -1356,12 +1442,12 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                                 })
                               }
                               className="px-1.5 py-0.5 rounded border border-surface-600 bg-transparent text-[10px] text-slate-300"
-                              title="Assign to milestone / sublist"
+                              title="Assign to group / sublist"
                             >
-                              <option value="" className="bg-surface-900">No milestone</option>
-                              {flattenedMilestones.map(({ milestone: m, depth }) => (
-                                <option key={m.id} value={m.id} className="bg-surface-900">
-                                  {'— '.repeat(depth)}{m.title}
+                              <option value="" className="bg-surface-900">No group</option>
+                              {flattenedGroups.map(({ group: g, depth }) => (
+                                <option key={g.id} value={g.id} className="bg-surface-900">
+                                  {'— '.repeat(depth)}{g.title}
                                 </option>
                               ))}
                             </select>
@@ -1517,7 +1603,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                             className="flex items-center gap-1.5 shrink-0"
                             onClick={(e) => e.stopPropagation()}
                           >
-                            {onSetEventMetadata && unifiedMilestones.length > 0 && (
+                            {onSetEventMetadata && (activeProject.lists ?? []).length > 0 && (
                               <select
                                 value={evt.projectListId ?? ''}
                                 onChange={(e) =>
@@ -1528,15 +1614,15 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                                   })
                                 }
                                 className="px-1.5 py-0.5 rounded border border-surface-600 bg-transparent text-[10px] text-slate-300"
-                                title="Assign to milestone / sublist"
+                                title="Assign to group / sublist"
                               >
                                 <option value="" className="bg-surface-900">
-                                  No milestone
+                                  No group
                                 </option>
-                                {flattenedMilestones.map(({ milestone: m, depth }) => (
-                                  <option key={m.id} value={m.id} className="bg-surface-900">
+                                {flattenedGroups.map(({ group: g, depth }) => (
+                                  <option key={g.id} value={g.id} className="bg-surface-900">
                                     {'— '.repeat(depth)}
-                                    {m.title}
+                                    {g.title}
                                   </option>
                                 ))}
                               </select>
@@ -1609,6 +1695,8 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
         onStartFocus={onStartFocus}
         onToggleTask={onToggleTask}
         onDeleteTask={onDeleteTask}
+        onUpdateTaskDetails={onUpdateTaskDetails}
+        onUpdateEventDetails={onUpdateEventDetails}
       />
     </div>
   );
