@@ -349,6 +349,7 @@ export function App() {
   const plannerContent = (
     <PlannerView
       tasks={tasks}
+      initialEvents={events}
       projects={data.projects}
       sessions={data.sessions}
       onToggleTask={toggleTaskCompleted}

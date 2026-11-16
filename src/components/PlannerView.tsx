@@ -31,6 +31,7 @@ import { TaskEventDetailModal, type DetailModalTarget } from './TaskEventDetailM
 
 interface PlannerViewProps {
   tasks: TaskItem[];
+  initialEvents?: CalendarEvent[];
   projects?: Project[];
   sessions: PomodoroSession[];
   onToggleTask?: (taskId: string) => void;
@@ -95,6 +96,8 @@ interface PlannerViewProps {
 
 type Mode = 'day' | 'week' | 'month';
 
+const rangeEventsCache = new Map<string, CalendarEvent[]>();
+
 function startOfWeek(d: Date): Date {
   const copy = new Date(d);
   copy.setHours(0, 0, 0, 0);
@@ -105,6 +108,7 @@ function startOfWeek(d: Date): Date {
 
 export const PlannerView: React.FC<PlannerViewProps> = ({
   tasks,
+  initialEvents = [],
   projects = [],
   sessions,
   onToggleTask,
@@ -137,7 +141,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
   const [selectedDayKey, setSelectedDayKey] = useState<string>(() =>
     toLocalYmd(new Date())
   );
-  const [events, setEvents] = useState<CalendarEvent[]>([]);
+  const [events, setEvents] = useState<CalendarEvent[]>(() => initialEvents);
   const [loading, setLoading] = useState(false);
   const [rescheduleEventId, setRescheduleEventId] = useState<string | null>(
     null
@@ -235,6 +239,17 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
     return { start, end };
   }, [cursor, mode, selectedDayKey]);
 
+  const rangeKey = `${range.start.toISOString()}__${range.end.toISOString()}`;
+
+  useEffect(() => {
+    const cached = rangeEventsCache.get(rangeKey);
+    if (cached && cached.length > 0) {
+      setEvents(cached);
+    } else if (initialEvents.length > 0) {
+      setEvents((prev) => (prev.length > 0 ? prev : initialEvents));
+    }
+  }, [initialEvents, rangeKey]);
+
   const loadRange = useCallback(async () => {
     setLoading(true);
     try {
@@ -242,11 +257,12 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
         range.start.toISOString(),
         range.end.toISOString()
       );
+      rangeEventsCache.set(rangeKey, evts);
       setEvents(evts);
     } finally {
       setLoading(false);
     }
-  }, [fetchEventsForRange, range.end, range.start]);
+  }, [fetchEventsForRange, range.end, range.start, rangeKey]);
 
   useEffect(() => {
     loadRange();

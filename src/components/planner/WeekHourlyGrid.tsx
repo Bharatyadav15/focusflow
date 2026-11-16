@@ -81,16 +81,27 @@ export const WeekHourlyGrid: React.FC<WeekHourlyGridProps> = ({
   getEventDurationMinutes,
 }) => {
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [gridHeight, setGridHeight] = useState<number>(480);
   const [dragItem, setDragItem] = useState<DragItem | null>(null);
   const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(null);
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
   const suppressClickRef = useRef(false);
 
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = 7 * HOUR_HEIGHT;
-    }
+    const el = scrollRef.current;
+    if (!el) return;
+    const update = () => {
+      const h = el.clientHeight;
+      if (h > 0) setGridHeight(h);
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
   }, []);
+
+  const hourHeight = Math.max(12, gridHeight / 24);
+  const labelStep = hourHeight < 20 ? 4 : hourHeight < 32 ? 2 : 1;
 
   const findDropTargetAtPoint = (x: number, y: number): DropTarget | null => {
     const els = document.elementsFromPoint(x, y);
@@ -344,21 +355,25 @@ export const WeekHourlyGrid: React.FC<WeekHourlyGridProps> = ({
         })}
       </div>
 
-      {/* Scrollable 24-Hour Vertical Grid */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto relative">
+      {/* 24-Hour Vertical Grid (fits window height) */}
+      <div ref={scrollRef} className="flex-1 min-h-0 overflow-hidden relative">
         <div
           className="grid grid-cols-[56px_repeat(7,minmax(0,1fr))] relative"
-          style={{ height: HOURS.length * HOUR_HEIGHT }}
+          style={{ height: HOURS.length * hourHeight }}
         >
           {/* Left Hour Gutter */}
           <div className="border-r border-surface-700/80 bg-surface-900/30">
             {HOURS.map((hour) => (
               <div
                 key={hour}
-                style={{ height: HOUR_HEIGHT }}
-                className="border-b border-surface-700/50 pr-2 pt-1 text-right text-[10px] font-medium text-slate-500"
+                style={{ height: hourHeight }}
+                className={`pr-2 text-right text-[10px] font-medium text-slate-500 flex items-start justify-end ${
+                  hour % labelStep === 0
+                    ? 'border-b border-surface-700/60'
+                    : 'border-b border-surface-700/20'
+                }`}
               >
-                {formatHourLabel(hour)}
+                {hour % labelStep === 0 ? formatHourLabel(hour) : ''}
               </div>
             ))}
           </div>
@@ -384,7 +399,7 @@ export const WeekHourlyGrid: React.FC<WeekHourlyGridProps> = ({
                       key={hour}
                       data-week-day-key={key}
                       data-week-hour={hour}
-                      style={{ height: HOUR_HEIGHT }}
+                      style={{ height: hourHeight }}
                       onClick={() => onStartAddForDay(key, hour)}
                       onDragOver={(e) => {
                         e.preventDefault();
@@ -405,7 +420,11 @@ export const WeekHourlyGrid: React.FC<WeekHourlyGridProps> = ({
                           await onReloadRange();
                         }
                       }}
-                      className={`border-b border-surface-700/40 transition cursor-pointer ${
+                      className={`transition cursor-pointer ${
+                        hour % labelStep === 0
+                          ? 'border-b border-surface-700/45'
+                          : 'border-b border-surface-700/20'
+                      } ${
                         isOver
                           ? 'bg-emerald-500/20 ring-1 ring-inset ring-emerald-400/70'
                           : 'hover:bg-surface-700/25'
@@ -423,8 +442,8 @@ export const WeekHourlyGrid: React.FC<WeekHourlyGridProps> = ({
                     25,
                     Math.round((en.getTime() - st.getTime()) / 60_000) || 45
                   );
-                  const top = (startMins / 60) * HOUR_HEIGHT;
-                  const height = Math.max(28, (durMins / 60) * HOUR_HEIGHT - 2);
+                  const top = (startMins / 60) * hourHeight;
+                  const height = Math.max(18, (durMins / 60) * hourHeight - 1);
                   const pMeta = getPriorityMeta(evt.priority);
                   const eProj = evt.projectId ? projectMap.get(evt.projectId) : undefined;
                   const eGrp =
