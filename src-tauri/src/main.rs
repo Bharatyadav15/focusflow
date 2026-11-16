@@ -79,6 +79,7 @@ fn ensure_main_window_with(app: &AppHandle, visible: bool) {
         .title("FocusFlow")
         .inner_size(1220.0, 820.0)
         .min_inner_size(1220.0, 820.0)
+        .disable_drag_drop_handler()
         .visible(visible)
         .build();
 }

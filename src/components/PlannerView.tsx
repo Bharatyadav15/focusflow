@@ -23,6 +23,7 @@ import { parseSmartTaskInput } from '../utils/taskParser';
 import { getEffectiveDueDate, getEffectiveProjectId } from '../utils/taskTree';
 import { extractYmd, formatTime, toLocalYmd } from '../utils/time';
 import { DayHourlyGrid } from './planner/DayHourlyGrid';
+import { WeekHourlyGrid } from './planner/WeekHourlyGrid';
 import { UnscheduledSidebar } from './planner/UnscheduledSidebar';
 import { TaskEventDetailModal, type DetailModalTarget } from './TaskEventDetailModal';
 
@@ -676,348 +677,50 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
 
       {/* WEEK VIEW */}
       {mode === 'week' && (
-        <div className="grid grid-cols-1 md:grid-cols-7 gap-3 flex-1 min-h-0">
-          {days.map((day) => {
-            const key = toLocalYmd(day);
-            const dayEvents = includeCalendarEvents ? (eventsByDay.get(key) ?? []) : [];
-            const dayTasks = tasksByDay.get(key) ?? [];
-            const isToday = key === todayKey;
-            const isSelected = key === selectedDayKey;
-
-            return (
-              <div
-                key={key}
-                onClick={() => setSelectedDayKey(key)}
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  e.dataTransfer.dropEffect = 'move';
-                  if (dragOverKey !== key) setDragOverKey(key);
-                }}
-                onDragLeave={() => {
-                  if (dragOverKey === key) setDragOverKey(null);
-                }}
-                onDrop={async (e) => {
-                  e.preventDefault();
-                  setDragOverKey(null);
-                  const eventId = e.dataTransfer.getData('text/focusflow-event-id');
-                  if (eventId) {
-                    const evt = events.find((ev) => ev.id === eventId);
-                    if (evt && toLocalYmd(new Date(evt.start)) !== key) {
-                      setSelectedDayKey(key);
-                      const origStart = new Date(evt.start);
-                      const origEnd = new Date(evt.end);
-                      const durMs = Math.max(15 * 60_000, origEnd.getTime() - origStart.getTime());
-                      const [y, m, d] = key.split('-').map(Number);
-                      const nextStart = new Date(
-                        y,
-                        (m || 1) - 1,
-                        d || 1,
-                        evt.isAllDay ? 0 : origStart.getHours(),
-                        evt.isAllDay ? 0 : origStart.getMinutes(),
-                        0,
-                        0
-                      );
-                      const nextEnd = new Date(nextStart.getTime() + durMs);
-                      const startIso = nextStart.toISOString();
-                      const endIso = nextEnd.toISOString();
-                      onRescheduleEvent(evt, startIso, endIso);
-                      setEvents((prev) =>
-                        prev.map((item) =>
-                          item.id === evt.id ? { ...item, start: startIso, end: endIso } : item
-                        )
-                      );
-                    }
-                    return;
-                  }
-
-                  const weekTaskId = e.dataTransfer.getData('text/focusflow-week-task-id');
-                  if (weekTaskId) {
-                    const tk = tasks.find((t) => t.id === weekTaskId);
-                    if (tk && extractYmd(tk.dueDate) !== key) {
-                      setSelectedDayKey(key);
-                      const [y, m, d] = key.split('-').map(Number);
-                      const dueIso = new Date(y, (m || 1) - 1, d || 1, 12, 0, 0, 0).toISOString();
-                      onRescheduleTask(tk, dueIso);
-                    }
-                    return;
-                  }
-
-                  const taskId = e.dataTransfer.getData('text/focusflow-task-id');
-                  const dragged = tasks.find((tk) => tk.id === taskId);
-                  if (dragged) {
-                    setSelectedDayKey(key);
-                    await onTimeBlockTask(dragged, key);
-                    await loadRange();
-                  }
-                }}
-                className={`rounded-2xl border p-3 flex flex-col min-h-[420px] cursor-pointer transition ${
-                  dragOverKey === key
-                    ? 'bg-emerald-500/15 border-emerald-400'
-                    : isSelected
-                      ? 'bg-indigo-500/10 border-indigo-400'
-                      : isToday
-                        ? 'bg-indigo-500/5 border-indigo-500/50'
-                        : 'bg-surface-800 border-surface-600/70'
-                }`}
-              >
-                <div className="flex items-center justify-between pb-2 mb-2 border-b border-surface-700">
-                  <div>
-                    <div className="text-[11px] uppercase text-slate-400">
-                      {day.toLocaleDateString([], { weekday: 'short' })}
-                    </div>
-                    <div
-                      className={`text-sm font-bold ${
-                        isToday ? 'text-indigo-300' : 'text-slate-100'
-                      }`}
-                    >
-                      {day.getDate()}
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    {(focusMinutesByDay.get(key) ?? 0) > 0 && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300">
-                        {focusMinutesByDay.get(key)}m
-                      </span>
-                    )}
-                    <button
-                      onClick={() => setAddingForDayKey(key)}
-                      className="p-1 rounded-lg bg-surface-700 hover:bg-indigo-500 text-slate-300 hover:text-white transition"
-                      title="Add event or task on this day"
-                    >
-                      <Plus className="w-3 h-3" />
-                    </button>
-                  </div>
-                </div>
-
-                <div className="space-y-2 flex-1 overflow-y-auto pr-0.5">
-                  {dayEvents.map((evt) => {
-                    const pMeta = getPriorityMeta(evt.priority);
-                    return (
-                      <div
-                        key={`${evt.calendarId}-${evt.id}`}
-                        draggable
-                        onDragStart={(e) => {
-                          e.stopPropagation();
-                          e.dataTransfer.setData('text/focusflow-event-id', evt.id);
-                          e.dataTransfer.effectAllowed = 'move';
-                        }}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setDetailTarget({ kind: 'event', event: evt });
-                        }}
-                        className="p-2 rounded-xl bg-surface-900/80 border border-surface-700 hover:border-indigo-500/60 space-y-1.5 cursor-grab active:cursor-grabbing transition"
-                      >
-                        <div className="flex items-center justify-between gap-1">
-                          <span className="text-[10px] text-indigo-300 font-medium truncate">
-                            {evt.isAllDay ? 'All day' : formatTime(evt.start)}
-                          </span>
-                          <select
-                            value={evt.priority ?? 3}
-                            onClick={(e) => e.stopPropagation()}
-                            onChange={(e) => {
-                              e.stopPropagation();
-                              const p = Number(e.target.value) as Priority;
-                              onSetEventPriority(evt.id, p);
-                              setEvents((prev) =>
-                                prev.map((x) =>
-                                  x.id === evt.id ? { ...x, priority: p } : x
-                                )
-                              );
-                            }}
-                            className={`text-[10px] px-1 py-0.5 rounded border bg-transparent ${pMeta.badgeClass}`}
-                          >
-                            {PRIORITIES.map((p) => (
-                              <option
-                                key={p.value}
-                                value={p.value}
-                                className="bg-surface-900 text-slate-100"
-                              >
-                                {p.short}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-
-                        <p className="text-xs font-medium text-slate-100 line-clamp-2">
-                          {evt.summary}
-                        </p>
-
-                        {(() => {
-                          const eProj = evt.projectId ? projectMap.get(evt.projectId) : undefined;
-                          const eGrp = eProj && evt.projectListId
-                            ? eProj.lists?.find((l) => l.id === evt.projectListId)
-                            : undefined;
-                          return eProj ? (
-                            <div className="flex flex-wrap items-center gap-1">
-                              <span
-                                className="text-[10px] px-1.5 py-0.5 rounded-full font-medium truncate max-w-full"
-                                style={{ backgroundColor: `${eProj.color}22`, color: eProj.color }}
-                              >
-                                {eProj.name}
-                                {eGrp ? ` · ${eGrp.title}` : ''}
-                              </span>
-                            </div>
-                          ) : null;
-                        })()}
-
-                        <div className="flex items-center gap-1 pt-0.5 flex-wrap">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onStartFocus({
-                                type: 'event',
-                                id: evt.id,
-                                title: evt.summary,
-                                calendarEventId: evt.id,
-                                projectId: evt.projectId,
-                                durationMinutes: getEventDurationMinutes(evt),
-                              });
-                            }}
-                            className="flex items-center gap-1 px-2 py-1 rounded bg-indigo-500/20 hover:bg-indigo-500 text-indigo-300 hover:text-white text-[10px] font-medium"
-                          >
-                            <Play className="w-2.5 h-2.5" /> Focus
-                          </button>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onConvertEventToTask(evt);
-                            }}
-                            className="flex items-center gap-1 px-1.5 py-1 rounded bg-emerald-500/15 hover:bg-emerald-500/30 border border-emerald-500/30 text-emerald-300 text-[10px] font-medium"
-                            title="Turn this Calendar Event into a Task with its calendar duration"
-                          >
-                            <ListTodo className="w-2.5 h-2.5" /> To Task
-                          </button>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              openRescheduleEvent(evt);
-                            }}
-                            className="p-1 rounded bg-surface-700 hover:bg-surface-600 text-slate-300"
-                            title="Reschedule"
-                          >
-                            <CalendarClock className="w-3 h-3" />
-                          </button>
-                        </div>
-
-                        {rescheduleEventId === evt.id && (
-                          <div className="pt-1.5 border-t border-surface-700 space-y-1">
-                            <input
-                              type="date"
-                              value={editDate}
-                              onChange={(e) => setEditDate(e.target.value)}
-                              className="w-full rounded bg-surface-800 border border-surface-600 px-1.5 py-0.5 text-[10px] text-slate-100"
-                            />
-                            <div className="flex gap-1">
-                              <input
-                                type="time"
-                                value={editStart}
-                                onChange={(e) => setEditStart(e.target.value)}
-                                className="w-1/2 rounded bg-surface-800 border border-surface-600 px-1 py-0.5 text-[10px] text-slate-100"
-                              />
-                              <input
-                                type="time"
-                                value={editEnd}
-                                onChange={(e) => setEditEnd(e.target.value)}
-                                className="w-1/2 rounded bg-surface-800 border border-surface-600 px-1 py-0.5 text-[10px] text-slate-100"
-                              />
-                            </div>
-                            <div className="flex gap-1">
-                              <button
-                                onClick={() => submitRescheduleEvent(evt)}
-                                className="flex-1 py-0.5 rounded bg-indigo-500 text-white text-[10px]"
-                              >
-                                Save
-                              </button>
-                              <button
-                                onClick={() => setRescheduleEventId(null)}
-                                className="px-1.5 py-0.5 rounded bg-surface-700 text-slate-300 text-[10px]"
-                              >
-                                Cancel
-                              </button>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-
-                  {dayTasks.map((t) => {
-                    const isQuickReminder = Boolean(t.durationMinutes && t.durationMinutes <= 10);
-                    if (isQuickReminder) {
-                      return (
-                        <div
-                          key={t.id}
-                          draggable
-                          onDragStart={(e) => {
-                            e.stopPropagation();
-                            e.dataTransfer.setData('text/focusflow-week-task-id', t.id);
-                            e.dataTransfer.effectAllowed = 'move';
-                          }}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setDetailTarget({ kind: 'task', task: t });
-                          }}
-                          className="px-2 py-1 rounded-lg bg-amber-500/10 border border-amber-500/30 hover:border-amber-400 flex items-center justify-between gap-1.5 cursor-grab active:cursor-grabbing text-[11px]"
-                          title="Quick reminder task (drag to reschedule or click for details)"
-                        >
-                          <span className="truncate text-amber-200">
-                            ⏰ {t.durationMinutes}m · {t.title}
-                          </span>
-                        </div>
-                      );
-                    }
-                    return (
-                      <div
-                        key={t.id}
-                        draggable
-                        onDragStart={(e) => {
-                          e.stopPropagation();
-                          e.dataTransfer.setData('text/focusflow-week-task-id', t.id);
-                          e.dataTransfer.effectAllowed = 'move';
-                        }}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setDetailTarget({ kind: 'task', task: t });
-                        }}
-                        className="p-2 rounded-xl bg-sky-500/10 border border-sky-500/30 hover:border-sky-400 space-y-1 cursor-grab active:cursor-grabbing transition"
-                      >
-                        <div className="flex items-center justify-between gap-1">
-                          <span className="text-[10px] text-sky-300 font-medium truncate">
-                            Task Due {extractYmd(t.dueDate).slice(5)}
-                          </span>
-                          <span
-                            className={`text-[10px] px-1 rounded border ${getPriorityMeta(t.priority).badgeClass}`}
-                          >
-                            {getPriorityMeta(t.priority).short}
-                          </span>
-                        </div>
-                        <p className="text-xs text-slate-100 line-clamp-2">
-                          {t.title}
-                        </p>
-                        {(() => {
-                          const effProj = getEffectiveProjectId(tasks, t);
-                          const tProj = effProj ? projectMap.get(effProj) : undefined;
-                          const tGrp = tProj && t.projectListId
-                            ? tProj.lists?.find((l) => l.id === t.projectListId)
-                            : undefined;
-                          return tProj ? (
-                            <span
-                              className="inline-block text-[10px] px-1.5 py-0.5 rounded-full font-medium truncate max-w-full"
-                              style={{ backgroundColor: `${tProj.color}22`, color: tProj.color }}
-                            >
-                              {tProj.name}
-                              {tGrp ? ` · ${tGrp.title}` : ''}
-                            </span>
-                          ) : null;
-                        })()}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
+        <WeekHourlyGrid
+          days={days}
+          todayKey={todayKey}
+          selectedDayKey={selectedDayKey}
+          onSelectDay={setSelectedDayKey}
+          includeCalendarEvents={includeCalendarEvents}
+          eventsByDay={eventsByDay}
+          tasksByDay={tasksByDay}
+          focusMinutesByDay={focusMinutesByDay}
+          tasks={tasks}
+          projectMap={projectMap}
+          onStartAddForDay={(dayKey, hour) => {
+            setSelectedDayKey(dayKey);
+            setAddingForDayKey(dayKey);
+            if (hour !== undefined) {
+              setAddKind('event');
+              setAddStart(`${String(hour).padStart(2, '0')}:00`);
+              setAddEnd(`${String(Math.min(23, hour + 1)).padStart(2, '0')}:00`);
+            }
+          }}
+          onSelectEvent={(evt) => setDetailTarget({ kind: 'event', event: evt })}
+          onSelectTask={(task) => setDetailTarget({ kind: 'task', task })}
+          onSetEventPriority={(eventId, priority) => {
+            onSetEventPriority(eventId, priority);
+            setEvents((prev) =>
+              prev.map((x) => (x.id === eventId ? { ...x, priority } : x))
             );
-          })}
-        </div>
+          }}
+          onStartFocus={onStartFocus}
+          onConvertEventToTask={onConvertEventToTask}
+          onRescheduleEvent={(evt, startIso, endIso) => {
+            onRescheduleEvent(evt, startIso, endIso);
+            setEvents((prev) =>
+              prev.map((item) =>
+                item.id === evt.id ? { ...item, start: startIso, end: endIso } : item
+              )
+            );
+          }}
+          onRescheduleTask={onRescheduleTask}
+          onTimeBlockTask={onTimeBlockTask}
+          onScheduleTaskAtTime={onScheduleTaskAtTime}
+          onReloadRange={loadRange}
+          getEventDurationMinutes={getEventDurationMinutes}
+        />
       )}
 
       {/* MONTH VIEW */}
