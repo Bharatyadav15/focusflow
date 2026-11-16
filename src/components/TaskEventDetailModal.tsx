@@ -40,6 +40,7 @@ interface TaskEventDetailModalProps {
   onStartFocus?: (target: TimerState['activeTarget']) => void;
   onToggleTask?: (taskId: string) => void;
   onDeleteTask?: (task: TaskItem) => void;
+  onDeleteEvent?: (evt: CalendarEvent) => void;
   onTimeBlockTask?: (task: TaskItem) => void;
   onConvertEventToTask?: (evt: CalendarEvent) => void;
   onLinkTaskToEvent?: (taskId: string, eventId: string | null) => void;
@@ -75,6 +76,7 @@ export const TaskEventDetailModal: React.FC<TaskEventDetailModalProps> = ({
   onStartFocus,
   onToggleTask,
   onDeleteTask,
+  onDeleteEvent,
   onTimeBlockTask,
   onConvertEventToTask,
   onLinkTaskToEvent,
@@ -688,36 +690,51 @@ export const TaskEventDetailModal: React.FC<TaskEventDetailModalProps> = ({
           </div>
         )}
 
-        <div className="flex items-center justify-end gap-2 pt-2 border-t border-surface-700">
-          {onConvertEventToTask && !linkedTask && (
-            <button
-              onClick={() => {
-                onConvertEventToTask(evt);
-                onClose();
-              }}
-              className="px-3 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500 text-emerald-300 hover:text-white text-xs font-medium transition"
-            >
-              To Task
-            </button>
-          )}
-          {onStartFocus && (
-            <button
-              onClick={() => {
-                onStartFocus({
-                  type: 'event',
-                  id: evt.id,
-                  title: evt.summary,
-                  calendarEventId: evt.id,
-                  projectId: evt.projectId,
-                  durationMinutes: durMins && durMins > 0 ? durMins : undefined,
-                });
-                onClose();
-              }}
-              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-indigo-500 hover:bg-indigo-400 text-xs font-semibold text-white"
-            >
-              <Play className="w-3.5 h-3.5" /> Start Focus
-            </button>
-          )}
+        <div className="flex items-center justify-between gap-2 pt-2 border-t border-surface-700">
+          <div>
+            {onDeleteEvent && (
+              <button
+                onClick={() => {
+                  onDeleteEvent(evt);
+                  onClose();
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/30 border border-rose-500/30 text-xs font-medium text-rose-300"
+              >
+                <Trash2 className="w-3.5 h-3.5" /> Delete
+              </button>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            {onConvertEventToTask && !linkedTask && (
+              <button
+                onClick={() => {
+                  onConvertEventToTask(evt);
+                  onClose();
+                }}
+                className="px-3 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500 text-emerald-300 hover:text-white text-xs font-medium transition"
+              >
+                To Task
+              </button>
+            )}
+            {onStartFocus && (
+              <button
+                onClick={() => {
+                  onStartFocus({
+                    type: 'event',
+                    id: evt.id,
+                    title: evt.summary,
+                    calendarEventId: evt.id,
+                    projectId: evt.projectId,
+                    durationMinutes: durMins && durMins > 0 ? durMins : undefined,
+                  });
+                  onClose();
+                }}
+                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-indigo-500 hover:bg-indigo-400 text-xs font-semibold text-white"
+              >
+                <Play className="w-3.5 h-3.5" /> Start Focus
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>

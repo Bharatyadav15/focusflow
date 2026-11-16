@@ -460,6 +460,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
         onStartFocus={onStartFocus}
         onToggleTask={onToggleTask}
         onDeleteTask={onDeleteTask}
+        onDeleteEvent={onDeleteEvent}
         onTimeBlockTask={onTimeBlockTask}
         onConvertEventToTask={onConvertEventToTask}
         onLinkTaskToEvent={onLinkTaskToEvent}

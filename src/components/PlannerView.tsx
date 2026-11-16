@@ -7,7 +7,9 @@ import {
   ListTodo,
   Play,
   Plus,
+  Redo2,
   RefreshCw,
+  Undo2,
   Wand2,
 } from 'lucide-react';
 import type {
@@ -65,6 +67,7 @@ interface PlannerViewProps {
     minute?: number
   ) => Promise<void>;
   onConvertEventToTask: (evt: CalendarEvent) => Promise<void>;
+  onDeleteEvent?: (evt: CalendarEvent) => Promise<void> | void;
   onLinkTaskToEvent?: (taskId: string, eventId: string | null) => void;
   onPlanMyDay?: (dateKey: string) => Promise<void>;
   onUpdateTaskDetails?: (
@@ -116,6 +119,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
   onTimeBlockTask,
   onScheduleTaskAtTime,
   onConvertEventToTask,
+  onDeleteEvent,
   onLinkTaskToEvent,
   onPlanMyDay,
   onUpdateTaskDetails,
@@ -148,6 +152,61 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
   const [addStart, setAddStart] = useState('10:00');
   const [addEnd, setAddEnd] = useState('11:00');
   const [addPriority, setAddPriority] = useState<Priority>(3);
+  type DragMoveEntry =
+    | {
+        kind: 'event';
+        event: CalendarEvent;
+        prevStart: string;
+        prevEnd: string;
+        nextStart: string;
+        nextEnd: string;
+      }
+    | {
+        kind: 'task';
+        task: TaskItem;
+        prevDueDate: string;
+        nextDueDate: string;
+      };
+  const [undoStack, setUndoStack] = useState<DragMoveEntry[]>([]);
+  const [redoStack, setRedoStack] = useState<DragMoveEntry[]>([]);
+
+  const handleUndoDrag = () => {
+    const entry = undoStack[undoStack.length - 1];
+    if (!entry) return;
+    setUndoStack((s) => s.slice(0, -1));
+    setRedoStack((s) => [...s, entry]);
+    if (entry.kind === 'event') {
+      onRescheduleEvent(entry.event, entry.prevStart, entry.prevEnd);
+      setEvents((prev) =>
+        prev.map((item) =>
+          item.id === entry.event.id
+            ? { ...item, start: entry.prevStart, end: entry.prevEnd }
+            : item
+        )
+      );
+    } else {
+      onRescheduleTask(entry.task, entry.prevDueDate);
+    }
+  };
+
+  const handleRedoDrag = () => {
+    const entry = redoStack[redoStack.length - 1];
+    if (!entry) return;
+    setRedoStack((s) => s.slice(0, -1));
+    setUndoStack((s) => [...s, entry]);
+    if (entry.kind === 'event') {
+      onRescheduleEvent(entry.event, entry.nextStart, entry.nextEnd);
+      setEvents((prev) =>
+        prev.map((item) =>
+          item.id === entry.event.id
+            ? { ...item, start: entry.nextStart, end: entry.nextEnd }
+            : item
+        )
+      );
+    } else {
+      onRescheduleTask(entry.task, entry.nextDueDate);
+    }
+  };
 
   const range = useMemo(() => {
     if (mode === 'day') {
@@ -432,6 +491,28 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
               Plan {selectedDayKey.slice(5)}
             </button>
           )}
+          {mode === 'week' && (
+            <div className="flex items-center gap-1">
+              <button
+                onClick={handleUndoDrag}
+                disabled={undoStack.length === 0}
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-surface-700 hover:bg-surface-600 disabled:opacity-40 disabled:cursor-not-allowed text-xs text-slate-200 transition"
+                title="Undo last drag move"
+              >
+                <Undo2 className="w-3.5 h-3.5" />
+                Undo
+              </button>
+              <button
+                onClick={handleRedoDrag}
+                disabled={redoStack.length === 0}
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-surface-700 hover:bg-surface-600 disabled:opacity-40 disabled:cursor-not-allowed text-xs text-slate-200 transition"
+                title="Redo last drag move"
+              >
+                <Redo2 className="w-3.5 h-3.5" />
+                Redo
+              </button>
+            </div>
+          )}
           <button
             onClick={() => setShowUnscheduled((s) => !s)}
             className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition ${
@@ -708,6 +789,18 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
           onStartFocus={onStartFocus}
           onConvertEventToTask={onConvertEventToTask}
           onRescheduleEvent={(evt, startIso, endIso) => {
+            setUndoStack((s) => [
+              ...s,
+              {
+                kind: 'event',
+                event: evt,
+                prevStart: evt.start,
+                prevEnd: evt.end,
+                nextStart: startIso,
+                nextEnd: endIso,
+              },
+            ]);
+            setRedoStack([]);
             onRescheduleEvent(evt, startIso, endIso);
             setEvents((prev) =>
               prev.map((item) =>
@@ -715,7 +808,21 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
               )
             );
           }}
-          onRescheduleTask={onRescheduleTask}
+          onRescheduleTask={(task, dueIso) => {
+            if (task.dueDate) {
+              setUndoStack((s) => [
+                ...s,
+                {
+                  kind: 'task',
+                  task,
+                  prevDueDate: task.dueDate!,
+                  nextDueDate: dueIso,
+                },
+              ]);
+              setRedoStack([]);
+            }
+            onRescheduleTask(task, dueIso);
+          }}
           onTimeBlockTask={onTimeBlockTask}
           onScheduleTaskAtTime={onScheduleTaskAtTime}
           onReloadRange={loadRange}
@@ -931,6 +1038,14 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
         onStartFocus={onStartFocus}
         onToggleTask={onToggleTask}
         onDeleteTask={onDeleteTask}
+        onDeleteEvent={
+          onDeleteEvent
+            ? async (evt) => {
+                await onDeleteEvent(evt);
+                setEvents((prev) => prev.filter((e) => e.id !== evt.id));
+              }
+            : undefined
+        }
         onTimeBlockTask={(task) => {
           onTimeBlockTask(task, selectedDayKey).then(() => loadRange());
         }}

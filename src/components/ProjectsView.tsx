@@ -58,6 +58,7 @@ interface ProjectsViewProps {
   onSetEventMetadata?: (eventId: string, meta: EventMetadata) => void;
   onLinkTaskToEvent?: (taskId: string, eventId: string | null) => void;
   onConvertEventToTask?: (evt: CalendarEvent) => void;
+  onDeleteEvent?: (evt: CalendarEvent) => void;
   onTimeBlockTask?: (task: TaskItem) => void;
   onCreateEvent?: (payload: {
     summary: string;
@@ -117,6 +118,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
   onSetEventMetadata,
   onLinkTaskToEvent,
   onConvertEventToTask,
+  onDeleteEvent,
   onTimeBlockTask,
   onCreateEvent,
   onUpdateTaskDetails,
@@ -1709,6 +1711,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
         onStartFocus={onStartFocus}
         onToggleTask={onToggleTask}
         onDeleteTask={onDeleteTask}
+        onDeleteEvent={onDeleteEvent}
         onTimeBlockTask={onTimeBlockTask}
         onConvertEventToTask={onConvertEventToTask}
         onLinkTaskToEvent={onLinkTaskToEvent}
