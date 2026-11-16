@@ -18,6 +18,12 @@ import type {
   TaskItem,
 } from '../types';
 import { formatTime, toLocalYmd } from '../utils/time';
+import {
+  getChildren,
+  getEffectiveCompletedPomodoros,
+  getEffectiveEstimatedPomodoros,
+  getTaskBreadcrumb,
+} from '../utils/taskTree';
 
 interface TimelineViewProps {
   sessions: PomodoroSession[];
@@ -156,13 +162,18 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
     });
 
     const estRows = tasks
-      .filter((t) => t.completedPomodoros > 0 || (t.completed && t.estimatedPomodoros > 0))
+      .filter((t) => !t.parentId)
+      .filter((t) => {
+        const effActual = getEffectiveCompletedPomodoros(tasks, t.id);
+        const effEst = getEffectiveEstimatedPomodoros(tasks, t.id);
+        return effActual > 0 || (t.completed && effEst > 0);
+      })
       .slice(0, 12)
       .map((t) => ({
         id: t.id,
         title: t.title,
-        est: Math.max(1, t.estimatedPomodoros || 1),
-        actual: t.completedPomodoros || 0,
+        est: Math.max(1, getEffectiveEstimatedPomodoros(tasks, t.id) || 1),
+        actual: getEffectiveCompletedPomodoros(tasks, t.id),
         completed: t.completed,
       }));
 
@@ -334,14 +345,24 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
           <div className="relative h-7 rounded-lg bg-surface-900 border border-surface-700 overflow-hidden">
             {todayTimedEvents.map((e) => {
               const { left, width } = toPctRange(e.start, e.end);
+              const linked = tasks.find(
+                (t) => t.linkedEventId === e.id || t.calendarEventId === e.id
+              );
+              const kids = linked ? getChildren(tasks, linked.id) : [];
+              const barLabel =
+                linked && kids.length > 0
+                  ? `${e.summary} (${kids.length} subtasks)`
+                  : linked?.parentId
+                    ? getTaskBreadcrumb(tasks, linked.id)
+                    : e.summary;
               return (
                 <div
                   key={e.id}
-                  title={`Planned: ${e.summary} (${formatTime(e.start)}–${formatTime(e.end)})`}
+                  title={`Planned: ${barLabel} (${formatTime(e.start)}–${formatTime(e.end)})`}
                   className="absolute top-1 bottom-1 rounded bg-sky-500/40 border border-sky-400/50 text-[10px] text-sky-100 px-1 truncate flex items-center"
                   style={{ left: `${left}%`, width: `${width}%` }}
                 >
-                  {e.summary}
+                  {barLabel}
                 </div>
               );
             })}

@@ -131,6 +131,9 @@ export function App() {
     saveTaskAsTemplate,
     deleteTemplate,
     setTaskMetadata,
+    moveTask,
+    parentCompletionPrompt,
+    dismissParentCompletionPrompt,
     addSubtask,
     toggleSubtask,
     deleteSubtask,
@@ -157,7 +160,8 @@ export function App() {
     projectId?: string,
     dueDate?: string,
     recurrence?: RecurrenceRule,
-    durationMinutes?: number
+    durationMinutes?: number,
+    parentId?: string
   ) => {
     const cleanRecurrence =
       recurrence && recurrence !== 'none' ? recurrence : undefined;
@@ -183,6 +187,7 @@ export function App() {
                   ...t,
                   priority,
                   projectId,
+                  parentId: parentId || t.parentId,
                   dueDate: dueDate ?? t.dueDate,
                   recurrence: cleanRecurrence ?? t.recurrence,
                   durationMinutes: durationMinutes ?? t.durationMinutes,
@@ -190,6 +195,9 @@ export function App() {
               : t
           );
           await saveTasks(updated);
+          if (parentId) {
+            await window.electronAPI.moveGoogleTask(created.id, parentId).catch(() => {});
+          }
         }
         notify('Added to Google Tasks');
         return;
@@ -197,12 +205,14 @@ export function App() {
         // Fallback to local
       }
     }
+    const newId = `task-${Date.now()}`;
     await saveTasks([
       {
-        id: `task-${Date.now()}`,
+        id: newId,
         title,
         priority,
         projectId,
+        parentId: parentId || undefined,
         dueDate,
         recurrence: cleanRecurrence,
         durationMinutes,
@@ -213,6 +223,9 @@ export function App() {
       },
       ...data.tasks,
     ]);
+    if (parentId) {
+      window.electronAPI?.moveGoogleTask(newId, parentId).catch(() => {});
+    }
   };
 
   if (isFloating || isTaskbar) {
@@ -528,6 +541,9 @@ export function App() {
             onSaveAsTemplate={saveTaskAsTemplate}
             onDeleteTemplate={deleteTemplate}
             onSetTaskMetadata={setTaskMetadata}
+            onMoveTask={moveTask}
+            parentCompletionPrompt={parentCompletionPrompt}
+            onDismissParentCompletionPrompt={dismissParentCompletionPrompt}
             onAddSubtask={addSubtask}
             onToggleSubtask={toggleSubtask}
             onDeleteSubtask={deleteSubtask}
@@ -553,6 +569,7 @@ export function App() {
             onSaveProjects={saveProjects}
             onSaveTasks={saveTasks}
             onToggleTask={toggleTaskCompleted}
+            onMoveTask={moveTask}
             onStartFocus={(target) => {
               startFocusOnTarget(target);
               setTab('day');

@@ -23,6 +23,7 @@ import type {
   TimerMode,
   TimerState,
 } from '../types';
+import { getTaskBreadcrumb } from '../utils/taskTree';
 import type { AmbientPreset } from '../utils/ambientSound';
 import { parseSmartTaskInput } from '../utils/taskParser';
 import { extractYmd, formatTimer, toLocalYmd } from '../utils/time';
@@ -459,7 +460,12 @@ export const FloatingWidget: React.FC<FloatingWidgetProps> = ({
     fillColor = timer.mode === 'shortBreak' ? '#10b981' : '#38bdf8';
   }
   const paused = !timer.isRunning && !breakReady && showActive;
+  const activeTaskBreadcrumb =
+    timer.activeTarget?.type === 'task' && timer.activeTarget.id
+      ? getTaskBreadcrumb(tasks, timer.activeTarget.id)
+      : '';
   const activeLabel =
+    activeTaskBreadcrumb ||
     timer.activeTarget?.title ||
     (timer.mode === 'shortBreak'
       ? 'Short Break'
@@ -749,14 +755,7 @@ export const FloatingWidget: React.FC<FloatingWidgetProps> = ({
                     style={{ backgroundColor: accentColor }}
                   />
                   <span className="text-xs font-semibold text-slate-100 truncate">
-                    {timer.activeTarget?.title ||
-                      (timer.mode === 'shortBreak'
-                        ? 'Short Break'
-                        : timer.mode === 'longBreak'
-                          ? 'Long Break'
-                          : timer.mode === 'stopwatch'
-                            ? 'Stopwatch'
-                            : 'Focus Session')}
+                    {activeLabel}
                   </span>
                 </div>
                 {timer.activeTarget?.nextSubtask && (

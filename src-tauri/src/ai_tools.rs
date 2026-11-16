@@ -32,10 +32,14 @@ pub fn get_mcp_tools_schema() -> Value {
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["list", "add", "update", "complete", "delete", "subtask"],
+                        "enum": ["list", "add", "update", "complete", "delete", "move", "subtask"],
                         "description": "Operation to perform on tasks"
                     },
-                    "task_id": { "type": "string", "description": "Exact task ID (for update/complete/delete/subtask)" },
+                    "task_id": { "type": "string", "description": "Exact task ID (for update/complete/delete/move/subtask)" },
+                    "parent_task_id": { "type": ["string", "null"], "description": "Parent task ID (for add/update/move; null detaches to root). Max depth 3." },
+                    "include_children": { "type": "boolean", "description": "Include child tasks when action='list' (default true)" },
+                    "roots_only": { "type": "boolean", "description": "Return only root tasks (parentId == null) when action='list'" },
+                    "cascade": { "type": "boolean", "description": "On complete: cascade-complete open children (default true). On delete: if true, delete descendants; if false/omitted, reparent children to grandparent." },
                     "title_match": { "type": "string", "description": "Task title substring match if task_id is omitted" },
                     "title": { "type": "string", "description": "Task title (required for 'add')" },
                     "new_title": { "type": "string", "description": "Updated title (for 'update')" },
@@ -497,8 +501,12 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                 events.iter().filter(|e| event_is_today(e)).collect()
             };
             let today_ymd = ymd_string(&Local::now());
-            let mut open_tasks: Vec<&TaskItem> =
-                app_data.tasks.iter().filter(|t| !t.completed).collect();
+            // Count a parent with open children as one work unit, not one per child.
+            let mut open_tasks: Vec<&TaskItem> = app_data
+                .tasks
+                .iter()
+                .filter(|t| crate::task_tree::is_open_unit_representative(&app_data.tasks, t))
+                .collect();
             open_tasks.sort_by(|a, b| {
                 let a_due = a.due_date.as_deref().and_then(|s| s.get(..10));
                 let b_due = b.due_date.as_deref().and_then(|s| s.get(..10));
@@ -577,11 +585,20 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                 .get("search")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_lowercase());
+            let include_children = args
+                .get("include_children")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            let roots_only = args
+                .get("roots_only")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
 
             let tasks: Vec<TaskItem> = app_data
                 .tasks
                 .into_iter()
                 .filter(|t| include_completed || !t.completed)
+                .filter(|t| (!roots_only && include_children) || t.parent_id.is_none())
                 .filter(|t| prio_filter.map(|p| t.priority == p).unwrap_or(true))
                 .filter(|t| {
                     resolved_proj
@@ -643,6 +660,17 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                         .unwrap_or(1)
                 });
             let app_data = state.store.get_app_data();
+            let parent_id = args
+                .get("parent_task_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            if let Err(err) =
+                crate::task_tree::validate_new_child_parent(&app_data.tasks, parent_id.as_deref())
+            {
+                return json!({ "ok": false, "error": err });
+            }
+            let estimate_explicit = args.get("estimated_pomodoros").is_some();
             let project_id = match resolve_project_id(
                 &app_data.projects,
                 args.get("project_id").and_then(|v| v.as_str()),
@@ -661,8 +689,10 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                         "notes": notes,
                         "priority": priority,
                         "dueDate": due_date,
+                        "parentId": parent_id,
                         "durationMinutes": duration_minutes,
                         "estimatedPomodoros": estimated_pomodoros,
+                        "estimateExplicit": estimate_explicit,
                         "projectId": project_id,
                         "recurrence": normalize_recurrence_opt(args.get("recurrence").and_then(|v| v.as_str())),
                         "noteLink": args.get("note_link").and_then(|v| v.as_str()),
@@ -684,8 +714,10 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
 
             created.priority = priority;
             created.due_date = due_date.clone();
+            created.parent_id = parent_id.clone();
             created.duration_minutes = duration_minutes;
             created.estimated_pomodoros = estimated_pomodoros;
+            created.estimate_explicit = estimate_explicit;
             created.project_id = project_id;
             created.recurrence = normalize_recurrence_opt(args.get("recurrence").and_then(|v| v.as_str()));
             created.note_link = args
@@ -732,6 +764,10 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                 )
                 .await;
             }
+            if parent_id.is_some() {
+                google_api::sync_task_parent_move(&state.store, &created.id, parent_id.as_deref())
+                    .await;
+            }
 
             rebuild_tray_menu(app);
             let _ = app.emit("data:updated", ());
@@ -763,6 +799,7 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                 Err(e) => return e,
             };
 
+            let previous_snapshot = tasks.clone();
             let previous_task = tasks[idx].clone();
             let mut updated_task = previous_task.clone();
             if let Some(nt) = args.get("new_title").and_then(|v| v.as_str()) {
@@ -784,6 +821,23 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
             }
             if let Some(ep) = args.get("estimated_pomodoros").and_then(|v| v.as_u64()) {
                 updated_task.estimated_pomodoros = (ep as u32).max(1);
+                updated_task.estimate_explicit = true;
+            }
+            if let Some(parent_val) = args.get("parent_task_id") {
+                let new_parent = match parent_val {
+                    Value::Null => None,
+                    Value::String(s) if s.trim().is_empty() => None,
+                    Value::String(s) => Some(s.trim().to_string()),
+                    _ => return json!({ "ok": false, "error": "parent_task_id must be a string or null" }),
+                };
+                if let Err(err) = crate::task_tree::validate_reparent(
+                    &tasks,
+                    &updated_task.id,
+                    new_parent.as_deref(),
+                ) {
+                    return json!({ "ok": false, "error": err });
+                }
+                updated_task.parent_id = new_parent;
             }
             if args.get("recurrence").is_some() {
                 updated_task.recurrence =
@@ -816,16 +870,39 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
             }
 
             let became_completed = !previous_task.completed && updated_task.completed;
+            let cascade = args
+                .get("cascade")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            let parent_changed = previous_task.parent_id != updated_task.parent_id;
+            let cascade_ids: Vec<String> = if became_completed && cascade {
+                crate::task_tree::descendant_ids(&tasks, &updated_task.id)
+                    .into_iter()
+                    .filter(|did| tasks.iter().any(|t| &t.id == did && !t.completed))
+                    .collect()
+            } else {
+                Vec::new()
+            };
             if dry_run {
                 return json!({
                     "ok": true,
                     "dryRun": true,
                     "message": format!("Dry run: would update task '{}'", updated_task.title),
                     "previewTask": updated_task,
+                    "wouldCascadeCompleteCount": cascade_ids.len(),
                     "wouldSpawnNextRecurring": became_completed && updated_task.recurrence.is_some(),
                 });
             }
             tasks[idx] = updated_task.clone();
+            let mut cascade_google_targets: Vec<(String, String)> = Vec::new();
+            for cid in &cascade_ids {
+                if let Some(child) = tasks.iter_mut().find(|t| &t.id == cid) {
+                    child.completed = true;
+                    if let (Some(gid), Some(lid)) = (&child.google_task_id, &child.google_task_list_id) {
+                        cascade_google_targets.push((lid.clone(), gid.clone()));
+                    }
+                }
+            }
 
             let mut next_recurring: Option<TaskItem> = None;
             if became_completed {
@@ -922,14 +999,28 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                 .await;
             }
 
+            if parent_changed {
+                google_api::sync_task_parent_move(
+                    &state.store,
+                    &updated_task.id,
+                    updated_task.parent_id.as_deref(),
+                )
+                .await;
+            }
+            for (lid, gid) in cascade_google_targets {
+                let _ = google_api::toggle_google_task(&state.store, lid, gid, true).await;
+            }
+
             rebuild_tray_menu(app);
             let _ = app.emit("data:updated", ());
             json!({
                 "ok": true,
                 "message": format!("Updated task '{}'", updated_task.title),
                 "task": updated_task,
+                "cascadeCompletedCount": cascade_ids.len(),
                 "nextRecurringTask": next_recurring,
                 "previousTask": previous_task,
+                "previousTasks": if !cascade_ids.is_empty() { Some(previous_snapshot) } else { None },
             })
         }
 
@@ -939,6 +1030,10 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                 .get("title_match")
                 .or_else(|| args.get("title"))
                 .and_then(|v| v.as_str());
+            let cascade = args
+                .get("cascade")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
 
             let mut tasks = state.store.get_app_data().tasks;
             let idx = match pick_unique(
@@ -953,16 +1048,47 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
                 Err(e) => return e,
             };
 
+            let target_id = tasks[idx].id.clone();
+            let direct_children_count = crate::task_tree::children_of(&tasks, &target_id).len();
+            let descendant_ids = if cascade {
+                crate::task_tree::descendant_ids(&tasks, &target_id)
+            } else {
+                Vec::new()
+            };
+
             if dry_run {
                 return json!({
                     "ok": true,
                     "dryRun": true,
                     "message": format!("Dry run: would delete task '{}'", tasks[idx].title),
                     "targetTask": tasks[idx],
+                    "cascade": cascade,
+                    "wouldReparentChildrenCount": if cascade { 0 } else { direct_children_count },
+                    "wouldDeleteDescendantsCount": descendant_ids.len(),
                 });
             }
 
-            let removed = tasks.remove(idx);
+            let previous_snapshot = tasks.clone();
+            let mut reparented_ids: Vec<String> = Vec::new();
+            let mut extra_google_deletes: Vec<(String, String)> = Vec::new();
+            let removed = if cascade {
+                let rem = tasks.remove(idx);
+                let desc_set: std::collections::HashSet<String> = descendant_ids.iter().cloned().collect();
+                for t in &tasks {
+                    if desc_set.contains(&t.id) {
+                        if let (Some(g), Some(l)) = (&t.google_task_id, &t.google_task_list_id) {
+                            extra_google_deletes.push((l.clone(), g.clone()));
+                        }
+                    }
+                }
+                tasks.retain(|t| !desc_set.contains(&t.id));
+                rem
+            } else {
+                reparented_ids = crate::task_tree::reparent_children_on_delete(&mut tasks, &target_id);
+                let pos = tasks.iter().position(|t| t.id == target_id).unwrap();
+                tasks.remove(pos)
+            };
+            let new_grandparent = removed.parent_id.clone();
             state.store.save_tasks(tasks);
 
             if let (Some(g_id), Some(list_id)) =
@@ -970,13 +1096,86 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
             {
                 let _ = google_api::delete_google_task(&state.store, list_id, g_id).await;
             }
+            for (lid, gid) in extra_google_deletes {
+                let _ = google_api::delete_google_task(&state.store, lid, gid).await;
+            }
+            for cid in &reparented_ids {
+                google_api::sync_task_parent_move(&state.store, cid, new_grandparent.as_deref()).await;
+            }
 
+            rebuild_tray_menu(app);
+            let _ = app.emit("data:updated", ());
+            let multi_affected = !reparented_ids.is_empty() || !descendant_ids.is_empty();
+            json!({
+                "ok": true,
+                "message": format!("Deleted task '{}'", removed.title),
+                "deletedTask": removed,
+                "reparentedChildrenCount": reparented_ids.len(),
+                "previousTasks": if multi_affected { Some(previous_snapshot) } else { None },
+            })
+        }
+
+        "move_task" => {
+            let task_id = args.get("task_id").and_then(|v| v.as_str());
+            let title_match = args
+                .get("title_match")
+                .or_else(|| args.get("title"))
+                .and_then(|v| v.as_str());
+            let mut tasks = state.store.get_app_data().tasks;
+            let idx = match pick_unique(
+                &tasks,
+                task_id,
+                title_match,
+                |t| t.id.clone(),
+                |t| t.title.clone(),
+                "task",
+            ) {
+                Ok(i) => i,
+                Err(e) => return e,
+            };
+
+            let new_parent = match args.get("parent_task_id") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(s)) if s.trim().is_empty() => None,
+                Some(Value::String(s)) => Some(s.trim().to_string()),
+                Some(_) => {
+                    return json!({ "ok": false, "error": "parent_task_id must be a string or null" })
+                }
+            };
+
+            let target_id = tasks[idx].id.clone();
+            if let Err(err) =
+                crate::task_tree::validate_reparent(&tasks, &target_id, new_parent.as_deref())
+            {
+                return json!({ "ok": false, "error": err });
+            }
+
+            let previous_task = tasks[idx].clone();
+            if dry_run {
+                return json!({
+                    "ok": true,
+                    "dryRun": true,
+                    "message": format!("Dry run: would move '{}' under {:?}", previous_task.title, new_parent),
+                    "taskId": target_id,
+                    "newParentId": new_parent,
+                });
+            }
+
+            tasks[idx].parent_id = new_parent.clone();
+            let moved_task = tasks[idx].clone();
+            state.store.save_tasks(tasks);
+
+            google_api::sync_task_parent_move(&state.store, &target_id, new_parent.as_deref()).await;
             rebuild_tray_menu(app);
             let _ = app.emit("data:updated", ());
             json!({
                 "ok": true,
-                "message": format!("Deleted task '{}'", removed.title),
-                "deletedTask": removed
+                "message": match &new_parent {
+                    Some(pid) => format!("Moved task '{}' under parent '{}'", moved_task.title, pid),
+                    None => format!("Detached task '{}' to root", moved_task.title),
+                },
+                "task": moved_task,
+                "previousTask": previous_task,
             })
         }
 
@@ -1861,6 +2060,14 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
             };
             let start_dt = chrono::DateTime::parse_from_rfc3339(&slot.start).unwrap();
             let end_dt = start_dt + Duration::minutes(dur_mins as i64);
+            if let Err(err) = crate::task_tree::validate_time_block_hierarchy(
+                &tasks,
+                &task.id,
+                &start_dt.to_rfc3339(),
+                &end_dt.to_rfc3339(),
+            ) {
+                return json!({ "ok": false, "error": err });
+            }
             if dry_run {
                 return json!({
                     "ok": true,
@@ -2397,7 +2604,7 @@ pub(crate) async fn execute_tool_inner(app: &AppHandle, name: &str, args: &Value
             json!({
                 "ok": false,
                 "error": format!(
-                    "Unknown action '{}' for manage_task; valid actions: list, add, update, complete, delete, subtask",
+                    "Unknown action '{}' for manage_task; valid actions: list, add, update, complete, delete, move, subtask",
                     act
                 )
             })

@@ -61,7 +61,8 @@ interface TodayViewProps {
     projectId?: string,
     dueDate?: string,
     recurrence?: RecurrenceRule,
-    durationMinutes?: number
+    durationMinutes?: number,
+    parentId?: string
   ) => void;
   templates?: TaskTemplate[];
   onApplyTemplate?: (tpl: TaskTemplate) => void;
@@ -81,6 +82,9 @@ interface TodayViewProps {
       noteLink?: string;
     }
   ) => void;
+  onMoveTask?: (taskId: string, newParentId?: string | null) => Promise<boolean>;
+  parentCompletionPrompt?: { parentId: string; parentTitle: string } | null;
+  onDismissParentCompletionPrompt?: () => void;
   onAddSubtask?: (taskId: string, title: string) => void;
   onToggleSubtask?: (taskId: string, subtaskId: string) => void;
   onDeleteSubtask?: (taskId: string, subtaskId: string) => void;
@@ -140,6 +144,9 @@ export const TodayView: React.FC<TodayViewProps> = ({
   onToggleTask,
   onDeleteTask,
   onSetTaskMetadata,
+  onMoveTask,
+  parentCompletionPrompt,
+  onDismissParentCompletionPrompt,
   onAddSubtask,
   onToggleSubtask,
   onDeleteSubtask,
@@ -360,6 +367,9 @@ export const TodayView: React.FC<TodayViewProps> = ({
               onToggleTask={onToggleTask}
               onDeleteTask={onDeleteTask}
               onSetTaskMetadata={onSetTaskMetadata}
+              onMoveTask={onMoveTask}
+              parentCompletionPrompt={parentCompletionPrompt}
+              onDismissParentCompletionPrompt={onDismissParentCompletionPrompt}
               onAddSubtask={onAddSubtask}
               onToggleSubtask={onToggleSubtask}
               onDeleteSubtask={onDeleteSubtask}

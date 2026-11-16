@@ -254,7 +254,7 @@ pub async fn plan_tasks_with_options(
         app_data
             .tasks
             .iter()
-            .filter(|t| !t.completed)
+            .filter(|t| crate::task_tree::is_open_unit_representative(&app_data.tasks, t))
             .filter(|t| {
                 t.blocked_by_task_ids
                     .iter()
@@ -278,16 +278,16 @@ pub async fn plan_tasks_with_options(
             .collect()
     };
 
-    // Sort: due today/overdue first, then priority 1..=5, then older/earlier tasks
+    // Sort: due today/overdue first (inheriting from parent if unset), then priority 1..=5
     candidates.sort_by(|a, b| {
-        let a_due = a
-            .due_date
+        let a_eff_due = crate::task_tree::effective_due_date(&app_data.tasks, a);
+        let b_eff_due = crate::task_tree::effective_due_date(&app_data.tasks, b);
+        let a_due = a_eff_due
             .as_deref()
             .and_then(|d| d.get(..10))
             .map(|d| d <= date_ymd.as_str())
             .unwrap_or(false);
-        let b_due = b
-            .due_date
+        let b_due = b_eff_due
             .as_deref()
             .and_then(|d| d.get(..10))
             .map(|d| d <= date_ymd.as_str())
@@ -305,10 +305,11 @@ pub async fn plan_tasks_with_options(
     let prev_tasks_snap: Vec<TaskItem> = all_tasks.clone();
 
     for task in candidates {
+        let eff_est = crate::task_tree::effective_estimated_pomodoros(&all_tasks, &task.id);
         let dur_mins = task
             .duration_minutes
             .filter(|&m| m > 0)
-            .unwrap_or_else(|| task.estimated_pomodoros.max(1) * focus_mins);
+            .unwrap_or_else(|| eff_est.max(1) * focus_mins);
         let dur_ms = (dur_mins as i64) * 60_000;
 
         let slot_idx = intervals.iter().position(|(s, e)| (*e - *s) >= dur_ms);
@@ -319,22 +320,33 @@ pub async fn plan_tasks_with_options(
 
         let slot_start_ms = intervals[idx].0;
         let slot_end_ms = slot_start_ms + dur_ms;
+        let Some(s_dt) = Local.timestamp_millis_opt(slot_start_ms).single() else {
+            skipped += 1;
+            continue;
+        };
+        let Some(e_dt) = Local.timestamp_millis_opt(slot_end_ms).single() else {
+            skipped += 1;
+            continue;
+        };
+        let start_str = s_dt.to_rfc3339();
+        let end_str = e_dt.to_rfc3339();
+        if let Err(err) = crate::task_tree::validate_time_block_hierarchy(
+            &all_tasks,
+            &task.id,
+            &start_str,
+            &end_str,
+        ) {
+            if single_targeted {
+                return Err(err);
+            }
+            skipped += 1;
+            continue;
+        }
         // Reserve 5-minute breathing room after each auto-planned block if possible
         intervals[idx].0 = (slot_end_ms + 5 * 60_000).min(intervals[idx].1);
         if intervals[idx].1 - intervals[idx].0 < 15 * 60_000 {
             intervals.remove(idx);
         }
-
-        let start_str = Local
-            .timestamp_millis_opt(slot_start_ms)
-            .single()
-            .map(|d| d.to_rfc3339())
-            .unwrap_or_default();
-        let end_str = Local
-            .timestamp_millis_opt(slot_end_ms)
-            .single()
-            .map(|d| d.to_rfc3339())
-            .unwrap_or_default();
 
         if dry_run {
             scheduled.push(json!({

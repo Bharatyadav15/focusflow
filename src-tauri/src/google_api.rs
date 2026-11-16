@@ -113,6 +113,7 @@ struct GoogleTaskEntry {
     notes: Option<String>,
     status: Option<String>,
     due: Option<String>,
+    parent: Option<String>,
     updated: Option<String>,
 }
 
@@ -654,6 +655,7 @@ pub async fn sync_google_tasks(store: &LocalStore) -> Result<SyncTasksResult, St
     store.save_task_lists(task_lists.clone());
 
     let mut remote_tasks = Vec::new();
+    let mut new_remote_parents: Vec<(String, String)> = Vec::new();
     for list in &task_lists {
         let mut task_page_token: Option<String> = None;
         let mut list_ok = true;
@@ -699,6 +701,11 @@ pub async fn sync_google_tasks(store: &LocalStore) -> Result<SyncTasksResult, St
                 let task_id = local_match
                     .map(|t| t.id.clone())
                     .unwrap_or_else(|| format!("gt-{}", gt.id));
+                if local_match.is_none() {
+                    if let Some(ref remote_parent_gid) = gt.parent {
+                        new_remote_parents.push((task_id.clone(), remote_parent_gid.clone()));
+                    }
+                }
 
                 list_items.push(TaskItem {
                     id: task_id.clone(),
@@ -708,7 +715,9 @@ pub async fn sync_google_tasks(store: &LocalStore) -> Result<SyncTasksResult, St
                     priority: local_match.map(|t| t.priority).unwrap_or(3),
                     completed: gt.status.as_deref() == Some("completed"),
                     due_date: gt.due,
+                    parent_id: local_match.and_then(|t| t.parent_id.clone()),
                     estimated_pomodoros: local_match.map(|t| t.estimated_pomodoros).unwrap_or(1),
+                    estimate_explicit: local_match.map(|t| t.estimate_explicit).unwrap_or(false),
                     completed_pomodoros: local_match.map(|t| t.completed_pomodoros).unwrap_or(0),
                     google_task_id: Some(gt.id),
                     google_task_list_id: Some(list.id.clone()),
@@ -760,6 +769,23 @@ pub async fn sync_google_tasks(store: &LocalStore) -> Result<SyncTasksResult, St
         }
     }
 
+    // Resolve Google `parent` for newly pulled remote tasks (never overwriting local parent_id).
+    if !new_remote_parents.is_empty() {
+        let gid_to_local: std::collections::HashMap<String, String> = remote_tasks
+            .iter()
+            .filter_map(|t| t.google_task_id.as_ref().map(|gid| (gid.clone(), t.id.clone())))
+            .collect();
+        for (child_id, parent_gid) in new_remote_parents {
+            if let Some(parent_local_id) = gid_to_local.get(&parent_gid).cloned() {
+                if let Some(t) = remote_tasks.iter_mut().find(|t| t.id == child_id) {
+                    if t.parent_id.is_none() {
+                        t.parent_id = Some(parent_local_id);
+                    }
+                }
+            }
+        }
+    }
+
     store.save_tasks(remote_tasks.clone());
     Ok(SyncTasksResult {
         tasks: remote_tasks,
@@ -796,7 +822,9 @@ pub async fn create_google_task(
                 priority: 3,
                 completed: false,
                 due_date: None,
+                parent_id: None,
                 estimated_pomodoros: 1,
+                estimate_explicit: false,
                 completed_pomodoros: 0,
                 google_task_id: None,
                 google_task_list_id: None,
@@ -847,7 +875,9 @@ pub async fn create_google_task(
                 priority: 3,
                 completed: false,
                 due_date: None,
+                parent_id: None,
                 estimated_pomodoros: 1,
+                estimate_explicit: false,
                 completed_pomodoros: 0,
                 google_task_id: None,
                 google_task_list_id: None,
@@ -890,7 +920,9 @@ pub async fn create_google_task(
         priority: 3,
         completed: false,
         due_date: created.due,
+        parent_id: None,
         estimated_pomodoros: 1,
+        estimate_explicit: false,
         completed_pomodoros: 0,
         google_task_id: Some(created.id),
         google_task_list_id: Some(target_list.clone()),
@@ -1196,6 +1228,60 @@ pub async fn flush_sync_queue(store: &LocalStore) -> Result<(usize, usize), Stri
                     }
                 }
             }
+            PendingSyncOp::MoveTask {
+                local_task_id,
+                task_list_id,
+                parent_local_task_id,
+            } => {
+                let tasks = store.get_app_data().tasks;
+                if let Some(child) = tasks.iter().find(|t| &t.id == local_task_id) {
+                    match child.google_task_id.as_deref() {
+                        None => false, // Child not synced yet; retry next flush after CreateTask.
+                        Some(child_gid) => {
+                            let parent_gid = match parent_local_task_id {
+                                None => Some(None),
+                                Some(pid) => match tasks.iter().find(|t| &t.id == pid) {
+                                    None => Some(None), // Parent gone; detach to root
+                                    Some(p) => match p.google_task_id.as_deref() {
+                                        None => None, // Parent not synced yet; keep queued
+                                        Some(pgid) => {
+                                            // Google Tasks only allows tasks.move within the same list
+                                            if p.google_task_list_id.as_deref().unwrap_or(task_list_id) != task_list_id {
+                                                Some(None)
+                                            } else {
+                                                Some(Some(pgid.to_string()))
+                                            }
+                                        }
+                                    },
+                                },
+                            };
+                            match parent_gid {
+                                None => false,
+                                Some(maybe_pgid) => {
+                                    let mut url = Url::parse(&format!(
+                                        "https://tasks.googleapis.com/tasks/v1/lists/{}/tasks/{}/move",
+                                        urlencoding::encode(task_list_id),
+                                        urlencoding::encode(child_gid)
+                                    ))
+                                    .unwrap();
+                                    if let Some(ref pgid) = maybe_pgid {
+                                        url.query_pairs_mut().append_pair("parent", pgid);
+                                    }
+                                    match client.post(url).bearer_auth(&token).send().await {
+                                        Ok(r) => r.status().is_success() || matches!(r.status().as_u16(), 404 | 410),
+                                        Err(_) => {
+                                            transport_err = true;
+                                            false
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    true
+                }
+            }
             PendingSyncOp::CreateEvent {
                 local_event_id,
                 calendar_id,
@@ -1306,4 +1392,83 @@ pub async fn flush_sync_queue(store: &LocalStore) -> Result<(usize, usize), Stri
     let rem_len = remaining.len();
     store.set_sync_ops(remaining);
     Ok((applied, rem_len))
+}
+
+/// Syncs a task's parent nesting to Google Tasks via `tasks.move`.
+/// Never fails or drops local nesting if offline or parent is not synced yet — queues `PendingSyncOp::MoveTask`.
+pub async fn sync_task_parent_move(
+    store: &LocalStore,
+    local_task_id: &str,
+    parent_local_task_id: Option<&str>,
+) {
+    let has_google = store.get_tokens().is_some();
+    if !has_google {
+        return;
+    }
+    let app_data = store.get_app_data();
+    let Some(child) = app_data.tasks.iter().find(|t| t.id == local_task_id) else {
+        return;
+    };
+    let list_id = child
+        .google_task_list_id
+        .clone()
+        .unwrap_or_else(|| {
+            let def = store.get_settings().default_task_list_id;
+            if def.is_empty() { "@default".to_string() } else { def }
+        });
+
+    let queue_move = || {
+        store.enqueue_sync_op(PendingSyncOp::MoveTask {
+            local_task_id: local_task_id.to_string(),
+            task_list_id: list_id.clone(),
+            parent_local_task_id: parent_local_task_id.map(str::to_string),
+        });
+    };
+
+    let Some(ref child_gid) = child.google_task_id else {
+        queue_move();
+        return;
+    };
+
+    let parent_gid = match parent_local_task_id {
+        None => None,
+        Some(pid) => match app_data.tasks.iter().find(|t| t.id == pid) {
+            None => return,
+            Some(p) => match p.google_task_id.as_deref() {
+                None => {
+                    queue_move();
+                    return;
+                }
+                Some(pgid) => {
+                    if p.google_task_list_id.as_deref().unwrap_or(&list_id) != list_id {
+                        return;
+                    }
+                    Some(pgid.to_string())
+                }
+            },
+        },
+    };
+
+    let Some(token) = get_valid_access_token(store).await else {
+        queue_move();
+        return;
+    };
+
+    let mut url = match Url::parse(&format!(
+        "https://tasks.googleapis.com/tasks/v1/lists/{}/tasks/{}/move",
+        urlencoding::encode(&list_id),
+        urlencoding::encode(child_gid)
+    )) {
+        Ok(u) => u,
+        Err(_) => return,
+    };
+    if let Some(ref pgid) = parent_gid {
+        url.query_pairs_mut().append_pair("parent", pgid);
+    }
+
+    let client = reqwest::Client::new();
+    match client.post(url).bearer_auth(&token).send().await {
+        Ok(r) if r.status().is_success() => {}
+        _ => queue_move(),
+    }
 }

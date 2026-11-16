@@ -2,6 +2,8 @@ import React, { useMemo, useState } from 'react';
 import {
   Check,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   Circle,
   Clock,
   FolderKanban,
@@ -10,6 +12,7 @@ import {
   Play,
   Plus,
   Trash2,
+  Unlink,
   X,
 } from 'lucide-react';
 import type {
@@ -20,6 +23,13 @@ import type {
   TimerState,
 } from '../types';
 import { getPriorityMeta, PRIORITIES } from '../utils/priority';
+import {
+  canReparentTask,
+  flattenTaskTree,
+  getEffectiveCompletedPomodoros,
+  getEffectiveEstimatedPomodoros,
+  getEffectiveProjectId,
+} from '../utils/taskTree';
 
 interface ProjectsViewProps {
   projects: Project[];
@@ -28,6 +38,7 @@ interface ProjectsViewProps {
   onSaveProjects: (projects: Project[]) => void;
   onSaveTasks: (tasks: TaskItem[]) => void;
   onToggleTask: (taskId: string) => void;
+  onMoveTask?: (taskId: string, newParentId?: string | null) => Promise<boolean>;
   onStartFocus: (target: TimerState['activeTarget']) => void;
 }
 
@@ -48,6 +59,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
   onSaveProjects,
   onSaveTasks,
   onToggleTask,
+  onMoveTask,
   onStartFocus,
 }) => {
   const [selectedProjectId, setSelectedProjectId] = useState<string>(
@@ -63,6 +75,9 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [editDesc, setEditDesc] = useState('');
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
+  const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [editColor, setEditColor] = useState(PROJECT_COLORS[0]);
   const [gatingMilestoneId, setGatingMilestoneId] = useState<string | null>(null);
 
@@ -84,9 +99,14 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
 
   const projectTasks = activeProject
     ? tasks
-        .filter((t) => t.projectId === activeProject.id)
+        .filter((t) => getEffectiveProjectId(tasks, t) === activeProject.id)
         .sort((a, b) => (a.priority ?? 3) - (b.priority ?? 3))
     : [];
+
+  const projectTreeNodes = useMemo(
+    () => flattenTaskTree(projectTasks, expandedIds, tasks),
+    [expandedIds, projectTasks, tasks]
+  );
 
   const handleAddProject = (e: React.FormEvent) => {
     e.preventDefault();
@@ -607,17 +627,85 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
               </form>
 
               <div className="space-y-2">
-                {projectTasks.length === 0 && (
+                {projectTreeNodes.length === 0 && (
                   <p className="text-sm text-slate-500 py-4 text-center">
                     No tasks in this project yet.
                   </p>
                 )}
-                {projectTasks.map((task) => (
+                {projectTreeNodes.map(({ task, depth, hasChildren, childCount, openChildCount }) => {
+                  const effEst = getEffectiveEstimatedPomodoros(tasks, task.id);
+                  const effDone = getEffectiveCompletedPomodoros(tasks, task.id);
+                  const isExpanded = expandedIds.has(task.id);
+                  const dropValid =
+                    draggedTaskId && dropTargetId === task.id
+                      ? canReparentTask(tasks, draggedTaskId, task.id).ok
+                      : null;
+
+                  return (
                   <div
                     key={task.id}
-                    className="flex items-center justify-between gap-3 p-3 rounded-xl bg-surface-900/60 border border-surface-700/80"
+                    draggable={Boolean(onMoveTask)}
+                    onDragStart={(e) => {
+                      e.stopPropagation();
+                      setDraggedTaskId(task.id);
+                    }}
+                    onDragEnd={() => {
+                      setDraggedTaskId(null);
+                      setDropTargetId(null);
+                    }}
+                    onDragOver={(e) => {
+                      if (!draggedTaskId || draggedTaskId === task.id) return;
+                      e.preventDefault();
+                      if (dropTargetId !== task.id) setDropTargetId(task.id);
+                    }}
+                    onDragLeave={() => {
+                      if (dropTargetId === task.id) setDropTargetId(null);
+                    }}
+                    onDrop={async (e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const src = draggedTaskId;
+                      setDraggedTaskId(null);
+                      setDropTargetId(null);
+                      if (src && src !== task.id && onMoveTask) {
+                        const moved = await onMoveTask(src, task.id);
+                        if (moved) {
+                          setExpandedIds((prev) => new Set(prev).add(task.id));
+                        }
+                      }
+                    }}
+                    style={{ marginLeft: depth * 18 }}
+                    className={`flex items-center justify-between gap-3 p-3 rounded-xl border transition ${
+                      dropValid === true
+                        ? 'bg-indigo-500/15 border-indigo-400 ring-2 ring-indigo-400/50'
+                        : dropValid === false
+                        ? 'bg-rose-500/10 border-rose-500/50'
+                        : 'bg-surface-900/60 border-surface-700/80'
+                    }`}
                   >
-                    <div className="flex items-center gap-3 min-w-0">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      {hasChildren ? (
+                        <button
+                          onClick={() =>
+                            setExpandedIds((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(task.id)) next.delete(task.id);
+                              else next.add(task.id);
+                              return next;
+                            })
+                          }
+                          className="text-slate-400 hover:text-slate-200 p-0.5 rounded flex-shrink-0"
+                          title={isExpanded ? 'Collapse children' : `Expand (${childCount})`}
+                        >
+                          {isExpanded ? (
+                            <ChevronDown className="w-4 h-4" />
+                          ) : (
+                            <ChevronRight className="w-4 h-4" />
+                          )}
+                        </button>
+                      ) : (
+                        <span className="w-5 flex-shrink-0" />
+                      )}
                       <button
                         onClick={() => onToggleTask(task.id)}
                         className="text-slate-400 hover:text-indigo-400"
@@ -644,7 +732,8 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                           >
                             {getPriorityMeta(task.priority).short}
                           </span>
-                          {task.completedPomodoros}/{task.estimatedPomodoros} pomos
+                          {effDone}/{effEst} pomos
+                          {hasChildren ? ` (${openChildCount}/${childCount} open)` : ''}
                           <select
                             value={task.durationMinutes ?? ''}
                             onChange={(e) =>
@@ -669,24 +758,36 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                       </div>
                     </div>
 
-                    {!task.completed && (
-                      <button
-                        onClick={() =>
-                          onStartFocus({
-                            type: 'task',
-                            id: task.id,
-                            title: task.title,
-                            projectId: task.projectId,
-                            durationMinutes: task.durationMinutes,
-                          })
-                        }
-                        className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-indigo-500/20 hover:bg-indigo-500 text-indigo-300 hover:text-white text-xs font-medium transition"
-                      >
-                        <Play className="w-3 h-3" /> Focus
-                      </button>
-                    )}
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      {task.parentId && onMoveTask && (
+                        <button
+                          onClick={() => onMoveTask(task.id, null)}
+                          className="p-1.5 rounded-lg bg-surface-800 hover:bg-surface-700 text-slate-300"
+                          title="Detach from parent to root"
+                        >
+                          <Unlink className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                      {!task.completed && (
+                        <button
+                          onClick={() =>
+                            onStartFocus({
+                              type: 'task',
+                              id: task.id,
+                              title: task.title,
+                              projectId: getEffectiveProjectId(tasks, task),
+                              durationMinutes: task.durationMinutes,
+                            })
+                          }
+                          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-indigo-500/20 hover:bg-indigo-500 text-indigo-300 hover:text-white text-xs font-medium transition"
+                        >
+                          <Play className="w-3 h-3" /> Focus
+                        </button>
+                      )}
+                    </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           </>

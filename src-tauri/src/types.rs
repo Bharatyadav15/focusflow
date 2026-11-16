@@ -64,8 +64,12 @@ pub struct TaskItem {
     pub completed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub due_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
     #[serde(default = "default_one")]
     pub estimated_pomodoros: u32,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub estimate_explicit: bool,
     #[serde(default)]
     pub completed_pomodoros: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -124,6 +128,10 @@ fn default_priority() -> u8 {
 
 fn default_one() -> u32 {
     1
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -355,6 +363,12 @@ pub enum PendingSyncOp {
     DeleteTask {
         task_list_id: String,
         google_task_id: String,
+    },
+    MoveTask {
+        local_task_id: String,
+        task_list_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        parent_local_task_id: Option<String>,
     },
     CreateEvent {
         local_event_id: String,

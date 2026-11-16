@@ -17,6 +17,7 @@ const AUDITED_TOOLS: &[&str] = &[
     "update_task",
     "complete_task",
     "delete_task",
+    "move_task",
     "add_calendar_event",
     "reschedule_calendar_event",
     "delete_calendar_event",
@@ -68,6 +69,7 @@ fn normalize_tool_call(name: &str, args: &Value) -> (String, Value) {
         ("manage_task", "edit" | "patch") => "update",
         ("manage_task", "done" | "finish") => "complete",
         ("manage_task", "remove") => "delete",
+        ("manage_task", "reparent") => "move",
         ("manage_task", "subtasks") => "subtask",
         ("manage_event", "create" | "new" | "schedule") => "add",
         ("manage_event", "move") => "reschedule",
@@ -87,6 +89,7 @@ fn normalize_tool_call(name: &str, args: &Value) -> (String, Value) {
             "update" => ("update_task".to_string(), args.clone()),
             "complete" => ("complete_task".to_string(), args.clone()),
             "delete" => ("delete_task".to_string(), args.clone()),
+            "move" => ("move_task".to_string(), args.clone()),
             "time_block" => ("time_block_task".to_string(), args.clone()),
             "subtask" => {
                 let mut cloned = args.clone();
@@ -196,19 +199,27 @@ pub async fn execute_tool(app: &AppHandle, raw_name: &str, raw_args: &Value) -> 
                     .get("previousTasks")
                     .filter(|p| !p.is_null())
                     .map(|prev_tasks| json!({ "kind": "tasks_patch_list", "data": prev_tasks })),
-                "delete_task" => result.get("deletedTask").map(|d| json!({ "kind": "task", "data": d })),
+                "delete_task" => result
+                    .get("previousTasks")
+                    .filter(|p| !p.is_null())
+                    .map(|prev_tasks| json!({ "kind": "tasks_patch_list", "data": prev_tasks }))
+                    .or_else(|| result.get("deletedTask").map(|d| json!({ "kind": "task", "data": d }))),
                 "delete_project" => result.get("deletedProject").map(|d| json!({ "kind": "project", "data": d })),
                 "delete_calendar_event" => result.get("deletedEvent").map(|d| json!({ "kind": "event", "data": d })),
-                "update_task" | "complete_task" | "manage_subtasks" | "time_block_task" => {
-                    // A recurring completion also spawns the next copy; remember it so undo can remove it.
-                    let spawned = result
-                        .get("nextRecurringTask")
-                        .and_then(|t| t.get("id"))
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                    result.get("previousTask").map(|d| {
-                        json!({ "kind": "task_patch", "data": d, "spawnedTaskId": spawned })
-                    })
+                "update_task" | "complete_task" | "move_task" | "manage_subtasks" | "time_block_task" => {
+                    if let Some(prev_tasks) = result.get("previousTasks").filter(|p| !p.is_null()) {
+                        Some(json!({ "kind": "tasks_patch_list", "data": prev_tasks }))
+                    } else {
+                        // A recurring completion also spawns the next copy; remember it so undo can remove it.
+                        let spawned = result
+                            .get("nextRecurringTask")
+                            .and_then(|t| t.get("id"))
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        result.get("previousTask").map(|d| {
+                            json!({ "kind": "task_patch", "data": d, "spawnedTaskId": spawned })
+                        })
+                    }
                 }
                 "reschedule_calendar_event" => {
                     result.get("previousEvent").map(|d| json!({ "kind": "event_patch", "data": d }))
@@ -357,6 +368,7 @@ pub async fn undo_audit(app: &AppHandle, id: i64) -> Result<String, String> {
             let Some(slot) = tasks.iter_mut().find(|t| t.id == prev.id) else {
                 return Err("Original task no longer exists".to_string());
             };
+            let parent_changed = slot.parent_id != prev.parent_id;
             *slot = prev.clone();
             // Remove the recurring copy spawned by the action being undone (also from Google).
             let mut removed_copy = false;
@@ -387,6 +399,9 @@ pub async fn undo_audit(app: &AppHandle, id: i64) -> Result<String, String> {
                     },
                 )
                 .await;
+            }
+            if parent_changed {
+                google_api::sync_task_parent_move(&state.store, &prev.id, prev.parent_id.as_deref()).await;
             }
             if removed_copy {
                 format!("Reverted changes to task '{}' and removed its recurring copy", title)

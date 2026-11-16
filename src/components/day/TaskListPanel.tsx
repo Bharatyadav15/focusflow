@@ -33,6 +33,15 @@ import type {
 import { getPriorityMeta, PRIORITIES } from '../../utils/priority';
 import { parseSmartTaskInput } from '../../utils/taskParser';
 import { extractYmd, formatTime, localOffsetToDueIso } from '../../utils/time';
+import {
+  canReparentTask,
+  flattenTaskTree,
+  getEffectiveCompletedPomodoros,
+  getEffectiveDueDate,
+  getEffectiveEstimatedPomodoros,
+  getEffectiveProjectId,
+  MAX_TREE_DEPTH,
+} from '../../utils/taskTree';
 
 const RECURRENCE_OPTIONS: { value: RecurrenceRule; label: string }[] = [
   { value: 'none', label: 'No Repeat' },
@@ -75,7 +84,8 @@ interface TaskListPanelProps {
     projectId?: string,
     dueDate?: string,
     recurrence?: RecurrenceRule,
-    durationMinutes?: number
+    durationMinutes?: number,
+    parentId?: string
   ) => void;
   onApplyTemplate?: (tpl: TaskTemplate) => void;
   onSaveAsTemplate?: (task: TaskItem) => void;
@@ -100,6 +110,9 @@ interface TaskListPanelProps {
   onTimeBlockTask: (task: TaskItem) => void;
   onLinkTaskToEvent: (taskId: string, eventId: string | null) => void;
   onSyncGoogleTasks: () => void;
+  onMoveTask?: (taskId: string, newParentId?: string | null) => Promise<boolean>;
+  parentCompletionPrompt?: { parentId: string; parentTitle: string } | null;
+  onDismissParentCompletionPrompt?: () => void;
 }
 
 export const TaskListPanel: React.FC<TaskListPanelProps> = ({
@@ -127,6 +140,9 @@ export const TaskListPanel: React.FC<TaskListPanelProps> = ({
   onTimeBlockTask,
   onLinkTaskToEvent,
   onSyncGoogleTasks,
+  onMoveTask,
+  parentCompletionPrompt,
+  onDismissParentCompletionPrompt,
 }) => {
   const [quickTitle, setQuickTitle] = useState('');
   const [quickPriority, setQuickPriority] = useState<Priority>(3);
@@ -138,6 +154,11 @@ export const TaskListPanel: React.FC<TaskListPanelProps> = ({
   const [subtaskDraft, setSubtaskDraft] = useState('');
   const [linkingTaskId, setLinkingTaskId] = useState<string | null>(null);
   const [rescheduleTaskId, setRescheduleTaskId] = useState<string | null>(null);
+  const [expandedTreeIds, setExpandedTreeIds] = useState<Set<string>>(() => new Set());
+  const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+  const [addingChildOfId, setAddingChildOfId] = useState<string | null>(null);
+  const [childDraftTitle, setChildDraftTitle] = useState('');
 
   const openTasks = tasks.filter((t) => !t.completed);
 
@@ -152,6 +173,20 @@ export const TaskListPanel: React.FC<TaskListPanelProps> = ({
       return (a.priority ?? 3) - (b.priority ?? 3);
     });
   }, [selectedListId, sortTasksByPriority, tasks]);
+
+  const treeNodes = useMemo(
+    () => flattenTaskTree(filteredTasks, expandedTreeIds, tasks),
+    [expandedTreeIds, filteredTasks, tasks]
+  );
+
+  const toggleTreeExpand = (id: string) => {
+    setExpandedTreeIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   const handleQuickAdd = (e: React.FormEvent) => {
     e.preventDefault();
@@ -317,19 +352,50 @@ export const TaskListPanel: React.FC<TaskListPanelProps> = ({
           </form>
 
           <div className="space-y-2 max-h-[380px] overflow-y-auto pr-1">
-            {filteredTasks.length === 0 && (
+            {parentCompletionPrompt && (
+              <div className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-xs text-emerald-200">
+                <span className="truncate">
+                  All subtasks of <strong>{parentCompletionPrompt.parentTitle}</strong> are done. Complete parent?
+                </span>
+                <div className="flex items-center gap-1.5 flex-shrink-0">
+                  <button
+                    onClick={() => {
+                      onToggleTask(parentCompletionPrompt.parentId);
+                      onDismissParentCompletionPrompt?.();
+                    }}
+                    className="px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-medium"
+                  >
+                    Complete
+                  </button>
+                  <button
+                    onClick={() => onDismissParentCompletionPrompt?.()}
+                    className="px-2 py-0.5 rounded bg-surface-700 hover:bg-surface-600 text-slate-300"
+                  >
+                    Keep open
+                  </button>
+                </div>
+              </div>
+            )}
+            {treeNodes.length === 0 && (
               <p className="text-sm text-slate-500 py-6 text-center">
                 No tasks found. Add one above or sync your Google Tasks.
               </p>
             )}
-            {filteredTasks.map((task) => {
+            {treeNodes.map(({ task, depth, hasChildren, childCount, openChildCount }) => {
               const linkedEvent = task.linkedEventId
                 ? eventMap.get(task.linkedEventId)
                 : undefined;
-              const proj = task.projectId
-                ? projectMap.get(task.projectId)
-                : undefined;
+              const effectiveProjId = getEffectiveProjectId(tasks, task);
+              const proj = effectiveProjId ? projectMap.get(effectiveProjId) : undefined;
+              const effectiveDue = getEffectiveDueDate(tasks, task);
+              const effEst = getEffectiveEstimatedPomodoros(tasks, task.id);
+              const effDone = getEffectiveCompletedPomodoros(tasks, task.id);
               const pMeta = getPriorityMeta(task.priority);
+              const isExpanded = expandedTreeIds.has(task.id);
+              const dropValid =
+                draggedTaskId && dropTargetId === task.id
+                  ? canReparentTask(tasks, draggedTaskId, task.id).ok
+                  : null;
               const isActive =
                 (timer.activeTarget?.type === 'task' &&
                   timer.activeTarget.id === task.id) ||
@@ -340,13 +406,63 @@ export const TaskListPanel: React.FC<TaskListPanelProps> = ({
               return (
                 <div
                   key={task.id}
+                  draggable={Boolean(onMoveTask)}
+                  onDragStart={(e) => {
+                    e.stopPropagation();
+                    setDraggedTaskId(task.id);
+                  }}
+                  onDragEnd={() => {
+                    setDraggedTaskId(null);
+                    setDropTargetId(null);
+                  }}
+                  onDragOver={(e) => {
+                    if (!draggedTaskId || draggedTaskId === task.id) return;
+                    e.preventDefault();
+                    if (dropTargetId !== task.id) setDropTargetId(task.id);
+                  }}
+                  onDragLeave={() => {
+                    if (dropTargetId === task.id) setDropTargetId(null);
+                  }}
+                  onDrop={async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const src = draggedTaskId;
+                    setDraggedTaskId(null);
+                    setDropTargetId(null);
+                    if (src && src !== task.id && onMoveTask) {
+                      const moved = await onMoveTask(src, task.id);
+                      if (moved) {
+                        setExpandedTreeIds((prev) => new Set(prev).add(task.id));
+                      }
+                    }
+                  }}
+                  style={{ marginLeft: depth * 18 }}
                   className={`group p-3 rounded-xl border transition ${
-                    isActive
+                    dropValid === true
+                      ? 'bg-indigo-500/15 border-indigo-400 ring-2 ring-indigo-400/50'
+                      : dropValid === false
+                      ? 'bg-rose-500/10 border-rose-500/50'
+                      : isActive
                       ? 'bg-indigo-500/10 border-indigo-500/50'
                       : 'bg-surface-900/60 border-surface-700/80 hover:border-surface-600'
                   }`}
                 >
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2.5">
+                    {hasChildren ? (
+                      <button
+                        onClick={() => toggleTreeExpand(task.id)}
+                        className="text-slate-400 hover:text-slate-200 p-0.5 rounded flex-shrink-0"
+                        title={isExpanded ? 'Collapse children' : `Expand (${childCount})`}
+                      >
+                        {isExpanded ? (
+                          <ChevronDown className="w-4 h-4" />
+                        ) : (
+                          <ChevronRight className="w-4 h-4" />
+                        )}
+                      </button>
+                    ) : (
+                      <span className="w-5 flex-shrink-0" />
+                    )}
                     <button
                       onClick={() => onToggleTask(task.id)}
                       className="text-slate-400 hover:text-indigo-400 flex-shrink-0"
@@ -408,9 +524,19 @@ export const TaskListPanel: React.FC<TaskListPanelProps> = ({
                           </span>
                         )}
 
-                        {task.dueDate && (
+                        {effectiveDue && (
                           <span className="text-[11px] text-slate-400">
-                            Due {toDateInputValue(task.dueDate)}
+                            Due {toDateInputValue(effectiveDue)}
+                            {!task.dueDate && ' (inherited)'}
+                          </span>
+                        )}
+                        {(hasChildren || effDone > 0 || effEst > 1) && (
+                          <span
+                            className="text-[11px] px-1.5 py-0.5 rounded bg-surface-800 text-slate-300"
+                            title="Completed / effective estimated pomodoros"
+                          >
+                            🍅 {effDone}/{effEst}
+                            {hasChildren ? ` · ${openChildCount}/${childCount} open` : ''}
                           </span>
                         )}
 
@@ -548,6 +674,27 @@ export const TaskListPanel: React.FC<TaskListPanelProps> = ({
 
                     {!task.completed && (
                       <div className="flex items-center gap-1">
+                        {depth + 1 < MAX_TREE_DEPTH && (
+                          <button
+                            onClick={() => {
+                              setAddingChildOfId(addingChildOfId === task.id ? null : task.id);
+                              setChildDraftTitle('');
+                            }}
+                            className="p-1.5 rounded-lg bg-surface-700 hover:bg-surface-600 text-slate-300 text-xs"
+                            title="Add nested child task"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        {task.parentId && onMoveTask && (
+                          <button
+                            onClick={() => onMoveTask(task.id, null)}
+                            className="p-1.5 rounded-lg bg-surface-700 hover:bg-surface-600 text-slate-300 text-xs"
+                            title="Detach from parent to root"
+                          >
+                            <Unlink className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                         <button
                           onClick={() =>
                             setRescheduleTaskId(
@@ -627,6 +774,52 @@ export const TaskListPanel: React.FC<TaskListPanelProps> = ({
                       </div>
                     )}
                   </div>
+
+                  {/* Add Nested Child Task Row */}
+                  {addingChildOfId === task.id && (
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        const trimmed = childDraftTitle.trim();
+                        if (!trimmed) return;
+                        onQuickAddTask(
+                          trimmed,
+                          task.googleTaskListId,
+                          task.priority ?? 3,
+                          undefined,
+                          undefined,
+                          undefined,
+                          undefined,
+                          task.id
+                        );
+                        setChildDraftTitle('');
+                        setAddingChildOfId(null);
+                        setExpandedTreeIds((prev) => new Set(prev).add(task.id));
+                      }}
+                      className="mt-2 pt-2 border-t border-surface-700 flex items-center gap-2"
+                    >
+                      <input
+                        autoFocus
+                        value={childDraftTitle}
+                        onChange={(e) => setChildDraftTitle(e.target.value)}
+                        placeholder={`New child under "${task.title}"...`}
+                        className="flex-1 bg-surface-900 border border-surface-600 rounded-lg px-2.5 py-1 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                      />
+                      <button
+                        type="submit"
+                        className="px-2.5 py-1 rounded-lg bg-indigo-500 hover:bg-indigo-400 text-white text-xs font-medium"
+                      >
+                        Add child
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAddingChildOfId(null)}
+                        className="p-1 text-slate-400 hover:text-slate-200"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </form>
+                  )}
 
                   {/* Reschedule Task Row */}
                   {rescheduleTaskId === task.id && (

@@ -22,6 +22,7 @@ import type {
   TimerState,
 } from '../types';
 import { parseSmartTaskInput } from '../utils/taskParser';
+import { getTaskBreadcrumb } from '../utils/taskTree';
 import { formatTime } from '../utils/time';
 import type { AmbientPreset } from '../utils/ambientSound';
 
@@ -271,7 +272,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       itemPool.push({
         id: `task-${t.id}`,
         group: 'Focus on Task',
-        label: t.title,
+        label: getTaskBreadcrumb(tasks, t.id),
         subtitle: `P${t.priority}${t.dueDate ? ` · Due ${t.dueDate.slice(0, 10)}` : ''}${t.durationMinutes ? ` · ${t.durationMinutes}m` : ''}`,
         icon: <CheckSquare className="w-4 h-4 text-indigo-300" />,
         run: () => {

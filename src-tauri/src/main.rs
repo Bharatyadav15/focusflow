@@ -7,6 +7,7 @@ mod google_api;
 mod google_auth;
 mod planner;
 mod store;
+pub(crate) mod task_tree;
 mod types;
 
 use chrono::{Local, Utc};
@@ -1487,6 +1488,23 @@ async fn google_toggle_task(
     Ok(())
 }
 
+#[tauri::command]
+async fn google_move_task(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    local_task_id: String,
+    parent_local_task_id: Option<String>,
+) -> Result<(), String> {
+    google_api::sync_task_parent_move(
+        &state.store,
+        &local_task_id,
+        parent_local_task_id.as_deref(),
+    )
+    .await;
+    rebuild_tray_menu(&app);
+    Ok(())
+}
+
 fn start_background_loops(app: AppHandle) {
     let app_cursor = app.clone();
     std::thread::spawn(move || loop {
@@ -2314,7 +2332,8 @@ fn main() {
             google_create_task,
             google_update_task,
             google_delete_task,
-            google_toggle_task
+            google_toggle_task,
+            google_move_task
         ])
         .run(tauri::generate_context!())
         .expect("error while running FocusFlow Tauri application");

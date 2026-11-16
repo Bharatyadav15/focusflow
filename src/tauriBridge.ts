@@ -291,6 +291,11 @@ export function initTauriBridgeIfNeeded() {
       taskId: string,
       completed: boolean
     ) => invoke<void>('google_toggle_task', { taskListId, taskId, completed }),
+    moveGoogleTask: (localTaskId: string, parentLocalTaskId?: string | null) =>
+      invoke<void>('google_move_task', {
+        localTaskId,
+        parentLocalTaskId: parentLocalTaskId ?? null,
+      }),
   };
 
   window.electronAPI = tauriApi;

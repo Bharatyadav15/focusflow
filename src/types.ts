@@ -56,7 +56,9 @@ export interface TaskItem {
   priority: Priority;
   completed: boolean;
   dueDate?: string;
+  parentId?: string;
   estimatedPomodoros: number;
+  estimateExplicit?: boolean;
   completedPomodoros: number;
   googleTaskId?: string;
   googleTaskListId?: string;
@@ -342,6 +344,7 @@ export interface ElectronAPI {
   ) => Promise<void>;
   deleteGoogleTask: (taskListId: string, taskId: string) => Promise<void>;
   toggleGoogleTask: (taskListId: string, taskId: string, completed: boolean) => Promise<void>;
+  moveGoogleTask: (localTaskId: string, parentLocalTaskId?: string | null) => Promise<void>;
 }
 
 declare global {

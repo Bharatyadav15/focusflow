@@ -14,6 +14,13 @@ import type {
 } from '../types';
 import { useTimerController } from './useTimerController';
 import { extractYmd, localOffsetToDueIso, nextRecurrenceDueIso } from '../utils/time';
+import {
+  canReparentTask,
+  canTimeBlockTask,
+  getDescendantIds,
+  getEffectiveEstimatedPomodoros,
+  reparentChildrenOnDelete,
+} from '../utils/taskTree';
 
 const DEFAULT_DATA: AppData = {
   projects: [],
@@ -73,6 +80,10 @@ export function useFocusFlow(isFloating = false) {
   const [loadingEvents, setLoadingEvents] = useState(false);
   const [syncingTasks, setSyncingTasks] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [parentCompletionPrompt, setParentCompletionPrompt] = useState<{
+    parentId: string;
+    parentTitle: string;
+  } | null>(null);
   const [upcomingReminder, setUpcomingReminder] = useState<CalendarEvent | null>(
     null
   );
@@ -309,16 +320,41 @@ export function useFocusFlow(isFloating = false) {
         projectId?: string;
         recurrence?: RecurrenceRule;
         durationMinutes?: number;
+        estimatedPomodoros?: number;
         blockedByTaskIds?: string[];
         noteLink?: string;
       }
     ) => {
       const updated = data.tasks.map((t) =>
-        t.id === taskId ? { ...t, ...meta } : t
+        t.id === taskId
+          ? {
+              ...t,
+              ...meta,
+              ...(meta.estimatedPomodoros !== undefined ? { estimateExplicit: true } : {}),
+            }
+          : t
       );
       await saveTasks(updated);
     },
     [data.tasks, saveTasks]
+  );
+
+  const moveTask = useCallback(
+    async (taskId: string, newParentId?: string | null): Promise<boolean> => {
+      const check = canReparentTask(data.tasks, taskId, newParentId);
+      if (!check.ok) {
+        notify(check.reason);
+        return false;
+      }
+      const nextParent = newParentId?.trim() ? newParentId.trim() : undefined;
+      const updated = data.tasks.map((t) =>
+        t.id === taskId ? { ...t, parentId: nextParent } : t
+      );
+      await saveTasks(updated);
+      api?.moveGoogleTask(taskId, nextParent ?? null).catch(() => {});
+      return true;
+    },
+    [api, data.tasks, notify, saveTasks]
   );
 
   const addSubtask = useCallback(
@@ -465,7 +501,7 @@ export function useFocusFlow(isFloating = false) {
   );
 
   const toggleTaskCompleted = useCallback(
-    async (taskId: string) => {
+    async (taskId: string, cascade = true) => {
       const target = data.tasks.find((t) => t.id === taskId);
       if (!target) return;
       const nextCompleted = !target.completed;
@@ -480,9 +516,37 @@ export function useFocusFlow(isFloating = false) {
           return;
         }
       }
+      const cascadeIds =
+        nextCompleted && cascade
+          ? new Set(
+              getDescendantIds(data.tasks, taskId).filter((did) =>
+                data.tasks.some((t) => t.id === did && !t.completed)
+              )
+            )
+          : new Set<string>();
       let updated = data.tasks.map((t) =>
-        t.id === taskId ? { ...t, completed: nextCompleted } : t
+        t.id === taskId || cascadeIds.has(t.id)
+          ? { ...t, completed: nextCompleted }
+          : t
       );
+
+      // Prompt (without auto-completing) when the last open child of an open parent is completed.
+      if (nextCompleted && target.parentId) {
+        const parent = updated.find((t) => t.id === target.parentId);
+        if (parent && !parent.completed) {
+          const remainingOpen = updated.filter(
+            (t) => t.parentId === parent.id && !t.completed
+          );
+          if (remainingOpen.length === 0) {
+            setParentCompletionPrompt({
+              parentId: parent.id,
+              parentTitle: parent.title,
+            });
+          }
+        }
+      } else if (!nextCompleted && parentCompletionPrompt?.parentId === target.parentId) {
+        setParentCompletionPrompt(null);
+      }
 
       let nextDueForRecurring: string | null = null;
       let spawnedClone: TaskItem | null = null;
@@ -516,6 +580,12 @@ export function useFocusFlow(isFloating = false) {
       }
 
       await saveTasks(updated);
+      for (const cid of cascadeIds) {
+        const child = data.tasks.find((t) => t.id === cid);
+        if (child?.googleTaskId && child.googleTaskListId && api) {
+          api.toggleGoogleTask(child.googleTaskListId, child.googleTaskId, true).catch(() => {});
+        }
+      }
       if (target.googleTaskId && target.googleTaskListId && api) {
         try {
           await api.toggleGoogleTask(
@@ -564,13 +634,19 @@ export function useFocusFlow(isFloating = false) {
         );
       }
     },
-    [api, data.tasks, notify, saveTasks]
+    [api, data.tasks, notify, parentCompletionPrompt?.parentId, saveTasks]
   );
 
   const deleteTask = useCallback(
     async (task: TaskItem) => {
-      const updated = data.tasks.filter((t) => t.id !== task.id);
+      const reparentedIds = data.tasks
+        .filter((t) => t.parentId === task.id)
+        .map((t) => t.id);
+      const updated = reparentChildrenOnDelete(data.tasks, task.id);
       await saveTasks(updated);
+      for (const cid of reparentedIds) {
+        api?.moveGoogleTask(cid, task.parentId ?? null).catch(() => {});
+      }
       if (task.googleTaskId && task.googleTaskListId && api) {
         try {
           await api.deleteGoogleTask(task.googleTaskListId, task.googleTaskId);
@@ -740,11 +816,18 @@ export function useFocusFlow(isFloating = false) {
   const timeBlockTask = useCallback(
     async (task: TaskItem, targetDateKey?: string) => {
       if (!api) return;
+      const effEst = getEffectiveEstimatedPomodoros(data.tasks, task.id);
       const durationMins =
         task.durationMinutes && task.durationMinutes > 0
           ? task.durationMinutes
-          : Math.max(1, task.estimatedPomodoros) * data.settings.focusMinutes;
+          : Math.max(1, effEst) * data.settings.focusMinutes;
       const durationMs = durationMins * 60_000;
+
+      const preCheck = canTimeBlockTask(data.tasks, task.id);
+      if (!preCheck.ok) {
+        notify(preCheck.reason);
+        return;
+      }
 
       const now = new Date();
       const baseDate = targetDateKey
@@ -849,13 +932,24 @@ export function useFocusFlow(isFloating = false) {
       minute = 0
     ) => {
       if (!api) return;
+      const effEst = getEffectiveEstimatedPomodoros(data.tasks, task.id);
       const durationMins =
         task.durationMinutes && task.durationMinutes > 0
           ? task.durationMinutes
-          : Math.max(1, task.estimatedPomodoros) * data.settings.focusMinutes;
+          : Math.max(1, effEst) * data.settings.focusMinutes;
       const [y, m, d] = targetDateKey.split('-').map(Number);
       const start = new Date(y, (m || 1) - 1, d || 1, hour, minute, 0, 0);
       const end = new Date(start.getTime() + durationMins * 60_000);
+      const check = canTimeBlockTask(
+        data.tasks,
+        task.id,
+        start.toISOString(),
+        end.toISOString()
+      );
+      if (!check.ok) {
+        notify(check.reason);
+        return;
+      }
 
       const created = await api.createCalendarEvent({
         calendarId: data.settings.defaultWriteCalendarId || 'primary',
@@ -1238,6 +1332,9 @@ export function useFocusFlow(isFloating = false) {
     saveTaskAsTemplate,
     deleteTemplate,
     setTaskMetadata,
+    moveTask,
+    parentCompletionPrompt,
+    dismissParentCompletionPrompt: () => setParentCompletionPrompt(null),
     addSubtask,
     toggleSubtask,
     deleteSubtask,
