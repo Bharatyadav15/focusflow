@@ -24,6 +24,7 @@ import { extractYmd, formatTime } from '../../utils/time';
 
 interface DaySchedulePanelProps {
   sortedEvents: CalendarEvent[];
+  tasks?: TaskItem[];
   taskMap: Map<string, TaskItem>;
   projectMap?: Map<string, Project>;
   timer: TimerState;
@@ -34,6 +35,7 @@ interface DaySchedulePanelProps {
   onRefreshEvents: () => void;
   onSetEventMetadata: (eventId: string, meta: EventMetadata) => void;
   onConvertEventToTask: (evt: CalendarEvent) => void;
+  onLinkTaskToEvent?: (taskId: string, eventId: string | null) => void;
   onRescheduleEvent: (
     evt: CalendarEvent,
     startIso: string,
@@ -50,6 +52,7 @@ interface DaySchedulePanelProps {
 
 export const DaySchedulePanel: React.FC<DaySchedulePanelProps> = ({
   sortedEvents,
+  tasks = [],
   taskMap,
   projectMap,
   timer,
@@ -60,6 +63,7 @@ export const DaySchedulePanel: React.FC<DaySchedulePanelProps> = ({
   onRefreshEvents,
   onSetEventMetadata,
   onConvertEventToTask,
+  onLinkTaskToEvent,
   onRescheduleEvent,
   onStartFocus,
   onDeleteEvent,
@@ -69,6 +73,7 @@ export const DaySchedulePanel: React.FC<DaySchedulePanelProps> = ({
   const [rescheduleEventId, setRescheduleEventId] = useState<string | null>(
     null
   );
+  const [linkingEventId, setLinkingEventId] = useState<string | null>(null);
   const [evtDate, setEvtDate] = useState('');
   const [evtStart, setEvtStart] = useState('09:00');
   const [evtEnd, setEvtEnd] = useState('10:00');
@@ -227,6 +232,21 @@ export const DaySchedulePanel: React.FC<DaySchedulePanelProps> = ({
                       <ListTodo className="w-3.5 h-3.5" />
                       To Task
                     </button>
+                    {onLinkTaskToEvent && tasks.length > 0 && (
+                      <button
+                        onClick={() =>
+                          setLinkingEventId(linkingEventId === evt.id ? null : evt.id)
+                        }
+                        className={`p-1.5 rounded-lg border transition ${
+                          linkedTask
+                            ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
+                            : 'bg-surface-700 hover:bg-surface-600 border-transparent text-slate-300'
+                        }`}
+                        title={linkedTask ? 'Change or unlink linked task' : 'Link to existing task'}
+                      >
+                        <Link2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                     <button
                       onClick={() => {
                         if (rescheduleEventId === evt.id) {
@@ -309,6 +329,41 @@ export const DaySchedulePanel: React.FC<DaySchedulePanelProps> = ({
                       className="px-2.5 py-1 rounded bg-indigo-500 hover:bg-indigo-400 text-white text-xs font-medium"
                     >
                       Save
+                    </button>
+                  </div>
+                )}
+
+                {linkingEventId === evt.id && onLinkTaskToEvent && (
+                  <div className="mt-2.5 pt-2.5 border-t border-surface-700 flex flex-wrap items-center gap-2 text-xs">
+                    <span className="text-slate-300">Link to task:</span>
+                    <select
+                      value={linkedTask?.id ?? ''}
+                      onChange={(e) => {
+                        if (linkedTask && !e.target.value) {
+                          onLinkTaskToEvent(linkedTask.id, null);
+                        } else if (e.target.value) {
+                          onLinkTaskToEvent(e.target.value, evt.id);
+                        }
+                        setLinkingEventId(null);
+                      }}
+                      className="flex-1 rounded-lg bg-surface-800 border border-surface-600 px-2 py-1 text-xs text-slate-100"
+                    >
+                      <option value="">
+                        {linkedTask ? 'Unlink current task' : 'Select task...'}
+                      </option>
+                      {tasks
+                        .filter((tk) => !tk.completed || tk.id === linkedTask?.id)
+                        .map((tk) => (
+                          <option key={tk.id} value={tk.id}>
+                            {tk.title}
+                          </option>
+                        ))}
+                    </select>
+                    <button
+                      onClick={() => setLinkingEventId(null)}
+                      className="px-2 py-1 rounded bg-surface-700 text-slate-300"
+                    >
+                      Close
                     </button>
                   </div>
                 )}

@@ -64,6 +64,7 @@ interface PlannerViewProps {
     minute?: number
   ) => Promise<void>;
   onConvertEventToTask: (evt: CalendarEvent) => Promise<void>;
+  onLinkTaskToEvent?: (taskId: string, eventId: string | null) => void;
   onPlanMyDay?: (dateKey: string) => Promise<void>;
   onUpdateTaskDetails?: (
     taskId: string,
@@ -114,6 +115,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
   onTimeBlockTask,
   onScheduleTaskAtTime,
   onConvertEventToTask,
+  onLinkTaskToEvent,
   onPlanMyDay,
   onUpdateTaskDetails,
   onUpdateEventDetails,
@@ -1159,6 +1161,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
       <TaskEventDetailModal
         target={detailTarget}
         tasks={tasks}
+        events={events}
         projects={projects}
         onClose={() => setDetailTarget(null)}
         onStartFocus={onStartFocus}
@@ -1168,6 +1171,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
           onTimeBlockTask(task, selectedDayKey).then(() => loadRange());
         }}
         onConvertEventToTask={onConvertEventToTask}
+        onLinkTaskToEvent={onLinkTaskToEvent}
         onUpdateTaskDetails={onUpdateTaskDetails}
         onUpdateEventDetails={
           onUpdateEventDetails

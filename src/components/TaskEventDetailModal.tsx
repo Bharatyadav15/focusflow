@@ -7,6 +7,7 @@ import {
   Clock,
   ExternalLink,
   FolderKanban,
+  Link2,
   ListChecks,
   Pencil,
   Play,
@@ -33,6 +34,7 @@ export type DetailModalTarget =
 interface TaskEventDetailModalProps {
   target: DetailModalTarget | null;
   tasks: TaskItem[];
+  events?: CalendarEvent[];
   projects: Project[];
   onClose: () => void;
   onStartFocus?: (target: TimerState['activeTarget']) => void;
@@ -40,6 +42,7 @@ interface TaskEventDetailModalProps {
   onDeleteTask?: (task: TaskItem) => void;
   onTimeBlockTask?: (task: TaskItem) => void;
   onConvertEventToTask?: (evt: CalendarEvent) => void;
+  onLinkTaskToEvent?: (taskId: string, eventId: string | null) => void;
   onUpdateTaskDetails?: (
     taskId: string,
     patch: {
@@ -66,6 +69,7 @@ interface TaskEventDetailModalProps {
 export const TaskEventDetailModal: React.FC<TaskEventDetailModalProps> = ({
   target,
   tasks,
+  events = [],
   projects,
   onClose,
   onStartFocus,
@@ -73,6 +77,7 @@ export const TaskEventDetailModal: React.FC<TaskEventDetailModalProps> = ({
   onDeleteTask,
   onTimeBlockTask,
   onConvertEventToTask,
+  onLinkTaskToEvent,
   onUpdateTaskDetails,
   onUpdateEventDetails,
 }) => {
@@ -348,6 +353,25 @@ export const TaskEventDetailModal: React.FC<TaskEventDetailModalProps> = ({
             <div className="text-xs text-indigo-300 flex items-center gap-1.5 truncate">
               <ExternalLink className="w-3.5 h-3.5 shrink-0" />
               <span className="truncate">{t.noteLink}</span>
+            </div>
+          )}
+
+          {onLinkTaskToEvent && events.length > 0 && (
+            <div className="flex items-center gap-2 text-xs">
+              <Link2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+              <select
+                value={t.linkedEventId ?? ''}
+                onChange={(e) => onLinkTaskToEvent(t.id, e.target.value || null)}
+                className="flex-1 rounded-lg bg-surface-900 border border-surface-600 px-2.5 py-1 text-xs text-slate-100"
+                title="Link this task to a calendar event"
+              >
+                <option value="">Link to calendar event...</option>
+                {events.map((ev) => (
+                  <option key={ev.id} value={ev.id}>
+                    {ev.isAllDay ? extractYmd(ev.start) : `${extractYmd(ev.start)} ${formatTime(ev.start)}`} · {ev.summary}
+                  </option>
+                ))}
+              </select>
             </div>
           )}
 
@@ -632,6 +656,35 @@ export const TaskEventDetailModal: React.FC<TaskEventDetailModalProps> = ({
         {evt.description && (
           <div className="rounded-xl bg-surface-900/70 border border-surface-700 p-3 text-xs text-slate-300 whitespace-pre-wrap max-h-48 overflow-y-auto">
             {evt.description}
+          </div>
+        )}
+
+        {onLinkTaskToEvent && tasks.length > 0 && (
+          <div className="flex items-center gap-2 text-xs">
+            <Link2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+            <select
+              value={linkedTask?.id ?? ''}
+              onChange={(e) => {
+                if (linkedTask && !e.target.value) {
+                  onLinkTaskToEvent(linkedTask.id, null);
+                } else if (e.target.value) {
+                  onLinkTaskToEvent(e.target.value, evt.id);
+                }
+              }}
+              className="flex-1 rounded-lg bg-surface-900 border border-surface-600 px-2.5 py-1 text-xs text-slate-100"
+              title="Link this calendar event to a task"
+            >
+              <option value="">
+                {linkedTask ? 'Unlink task' : 'Link to task...'}
+              </option>
+              {tasks
+                .filter((tk) => !tk.completed || tk.id === linkedTask?.id)
+                .map((tk) => (
+                  <option key={tk.id} value={tk.id}>
+                    {tk.title}
+                  </option>
+                ))}
+            </select>
           </div>
         )}
 

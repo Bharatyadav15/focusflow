@@ -57,6 +57,8 @@ interface ProjectsViewProps {
   ) => void;
   onSetEventMetadata?: (eventId: string, meta: EventMetadata) => void;
   onLinkTaskToEvent?: (taskId: string, eventId: string | null) => void;
+  onConvertEventToTask?: (evt: CalendarEvent) => void;
+  onTimeBlockTask?: (task: TaskItem) => void;
   onCreateEvent?: (payload: {
     summary: string;
     startIso: string;
@@ -114,6 +116,8 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
   onSetTaskMetadata,
   onSetEventMetadata,
   onLinkTaskToEvent,
+  onConvertEventToTask,
+  onTimeBlockTask,
   onCreateEvent,
   onUpdateTaskDetails,
   onUpdateEventDetails,
@@ -1124,6 +1128,15 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                                         ))}
                                       </select>
                                     )}
+                                    {onConvertEventToTask && !evt.linkedTaskId && (
+                                      <button
+                                        onClick={() => onConvertEventToTask(evt)}
+                                        className="px-2 py-1 rounded bg-emerald-500/15 hover:bg-emerald-500/30 text-emerald-300 text-[11px]"
+                                        title="Convert calendar event into a task"
+                                      >
+                                        To Task
+                                      </button>
+                                    )}
                                     <button
                                       onClick={() =>
                                         onStartFocus({
@@ -1690,11 +1703,15 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
       <TaskEventDetailModal
         target={detailTarget}
         tasks={tasks}
+        events={enrichedEvents}
         projects={projects}
         onClose={() => setDetailTarget(null)}
         onStartFocus={onStartFocus}
         onToggleTask={onToggleTask}
         onDeleteTask={onDeleteTask}
+        onTimeBlockTask={onTimeBlockTask}
+        onConvertEventToTask={onConvertEventToTask}
+        onLinkTaskToEvent={onLinkTaskToEvent}
         onUpdateTaskDetails={onUpdateTaskDetails}
         onUpdateEventDetails={onUpdateEventDetails}
       />

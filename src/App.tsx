@@ -389,6 +389,7 @@ export function App() {
       onTimeBlockTask={timeBlockTask}
       onScheduleTaskAtTime={scheduleTaskAtTime}
       onConvertEventToTask={convertEventToTask}
+      onLinkTaskToEvent={linkTaskToEvent}
       onPlanMyDay={planMyDay}
       onUpdateTaskDetails={updateTaskDetails}
       onUpdateEventDetails={updateEventDetails}
@@ -589,6 +590,8 @@ export function App() {
             onUpdateTaskDetails={updateTaskDetails}
             onUpdateEventDetails={updateEventDetails}
             onLinkTaskToEvent={linkTaskToEvent}
+            onConvertEventToTask={convertEventToTask}
+            onTimeBlockTask={timeBlockTask}
             onCreateEvent={async ({ summary, startIso, endIso, priority, projectId, projectListId }) => {
               if (!window.electronAPI) return;
               const created = await window.electronAPI.createCalendarEvent({

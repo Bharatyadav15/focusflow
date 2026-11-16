@@ -419,6 +419,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
 
           <DaySchedulePanel
             sortedEvents={sortedEvents}
+            tasks={tasks}
             taskMap={taskMap}
             projectMap={projectMap}
             timer={timer}
@@ -431,6 +432,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
             onRefreshEvents={onRefreshEvents}
             onSetEventMetadata={onSetEventMetadata}
             onConvertEventToTask={onConvertEventToTask}
+            onLinkTaskToEvent={onLinkTaskToEvent}
             onRescheduleEvent={onRescheduleEvent}
             onStartFocus={onStartFocus}
             onDeleteEvent={onDeleteEvent}
@@ -452,6 +454,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
       <TaskEventDetailModal
         target={detailTarget}
         tasks={tasks}
+        events={events}
         projects={projects}
         onClose={() => setDetailTarget(null)}
         onStartFocus={onStartFocus}
@@ -459,6 +462,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
         onDeleteTask={onDeleteTask}
         onTimeBlockTask={onTimeBlockTask}
         onConvertEventToTask={onConvertEventToTask}
+        onLinkTaskToEvent={onLinkTaskToEvent}
         onUpdateTaskDetails={onUpdateTaskDetails}
         onUpdateEventDetails={onUpdateEventDetails}
       />
