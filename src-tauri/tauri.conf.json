@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "FocusFlow",
+  "version": "0.1.0",
+  "identifier": "com.focusflow.desktop",
+  "build": {
+    "beforeDevCommand": "npm run build",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "npx vite build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self' ipc: http://ipc.localhost; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "shortDescription": "FocusFlow Desktop Productivity & Pomodoro Timer",
+    "longDescription": "Desktop productivity app combining Pomodoro timer, floating controls, Google Calendar & Tasks sync, smart auto-day planning, and local MCP/HTTP AI integration.",
+    "copyright": "Copyright (c) 2026 FocusFlow",
+    "icon": [
+      "../assets/icon.ico",
+      "../assets/icon.png"
+    ]
+  }
+}

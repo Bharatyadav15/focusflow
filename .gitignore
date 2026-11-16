@@ -1,0 +1,22 @@
+# Dependencies & frontend build
+node_modules/
+dist/
+.vite/
+
+# Rust / Tauri build artifacts & releases
+src-tauri/target/
+FocusFlow.exe
+*.exe
+release-portable/
+
+# Logs, local state, secrets & backups
+*.log
+*.bak
+.env
+.env.*
+ai-token
+focusflow-data.json
+
+# OS / editor noise
+.DS_Store
+Thumbs.db

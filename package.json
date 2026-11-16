@@ -1,0 +1,28 @@
+{
+  "name": "focusflow",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Focusmo-inspired Windows desktop productivity app (Tauri v2 Rust + React) with Google Calendar, Google Tasks, Project Manager, and connected Pomodoro timer.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "tauri:build": "tsc --noEmit -p tsconfig.json && vite build && cargo build --release --manifest-path src-tauri/Cargo.toml --offline && (taskkill /IM FocusFlow.exe /F >nul 2>&1 & ping -n 2 127.0.0.1 >nul & copy /Y src-tauri\\target\\release\\focusflow.exe FocusFlow.exe)",
+    "package:windows": "powershell -ExecutionPolicy Bypass -File scripts/package-portable.ps1"
+  },
+  "dependencies": {
+    "lucide-react": "^0.460.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.15",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  }
+}
