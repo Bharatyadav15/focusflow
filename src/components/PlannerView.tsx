@@ -14,18 +14,23 @@ import type {
   CalendarEvent,
   PomodoroSession,
   Priority,
+  Project,
   TaskItem,
   TimerState,
 } from '../types';
 import { getPriorityMeta, PRIORITIES } from '../utils/priority';
 import { parseSmartTaskInput } from '../utils/taskParser';
+import { getEffectiveDueDate, getEffectiveProjectId } from '../utils/taskTree';
 import { extractYmd, formatTime, toLocalYmd } from '../utils/time';
 import { DayHourlyGrid } from './planner/DayHourlyGrid';
 import { UnscheduledSidebar } from './planner/UnscheduledSidebar';
+import { TaskEventDetailModal, type DetailModalTarget } from './TaskEventDetailModal';
 
 interface PlannerViewProps {
   tasks: TaskItem[];
+  projects?: Project[];
   sessions: PomodoroSession[];
+  onToggleTask?: (taskId: string) => void;
   fetchEventsForRange: (
     timeMin: string,
     timeMax: string
@@ -73,7 +78,9 @@ function startOfWeek(d: Date): Date {
 
 export const PlannerView: React.FC<PlannerViewProps> = ({
   tasks,
+  projects = [],
   sessions,
+  onToggleTask,
   fetchEventsForRange,
   onStartFocus,
   onRescheduleTask,
@@ -87,7 +94,12 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
   onPlanMyDay,
 }) => {
   const [mode, setMode] = useState<Mode>('week');
-  const [showUnscheduled, setShowUnscheduled] = useState(true);
+  const [showUnscheduled, setShowUnscheduled] = useState(false);
+  const [selectedProjectIds, setSelectedProjectIds] = useState<Set<string> | null>(null);
+  const [includeNoProject, setIncludeNoProject] = useState(true);
+  const [includeUnscheduledInGrid, setIncludeUnscheduledInGrid] = useState(true);
+  const [includeCalendarEvents, setIncludeCalendarEvents] = useState(true);
+  const [detailTarget, setDetailTarget] = useState<DetailModalTarget | null>(null);
   const [dragOverKey, setDragOverKey] = useState<string | null>(null);
   const [cursor, setCursor] = useState<Date>(() => new Date());
   const [selectedDayKey, setSelectedDayKey] = useState<string>(() =>
@@ -182,18 +194,44 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
     return map;
   }, [events]);
 
+  const taskPassesFilters = useCallback(
+    (t: TaskItem) => {
+      if (mode !== 'day') {
+        const effProj = getEffectiveProjectId(tasks, t);
+        if (effProj) {
+          if (selectedProjectIds !== null && !selectedProjectIds.has(effProj)) {
+            return false;
+          }
+        } else if (!includeNoProject) {
+          return false;
+        }
+        const isUnscheduled =
+          !t.linkedEventId &&
+          !t.calendarEventId &&
+          !(t.scheduledStart && t.scheduledEnd);
+        if (!includeUnscheduledInGrid && isUnscheduled) {
+          return false;
+        }
+      }
+      return true;
+    },
+    [includeNoProject, includeUnscheduledInGrid, mode, selectedProjectIds, tasks]
+  );
+
   const tasksByDay = useMemo(() => {
     const map = new Map<string, TaskItem[]>();
     for (const t of tasks) {
-      if (!t.dueDate) continue;
-      const key = extractYmd(t.dueDate);
+      if (!taskPassesFilters(t)) continue;
+      const effDue = getEffectiveDueDate(tasks, t);
+      if (!effDue) continue;
+      const key = extractYmd(effDue);
       if (!key) continue;
       const list = map.get(key) ?? [];
       list.push(t);
       map.set(key, list);
     }
     return map;
-  }, [tasks]);
+  }, [taskPassesFilters, tasks]);
 
   const focusMinutesByDay = useMemo(() => {
     const map = new Map<string, number>();
@@ -473,6 +511,89 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
         </form>
       )}
 
+      {/* Project & Layer Filter Bar (Week & Month) */}
+      {mode !== 'day' && (
+        <div className="flex flex-wrap items-center gap-2 rounded-2xl bg-surface-800/80 border border-surface-700 px-4 py-2.5 text-xs">
+          <span className="text-[11px] uppercase tracking-wider text-slate-400 mr-1">
+            Show:
+          </span>
+          {projects.map((p) => {
+            const active = selectedProjectIds === null || selectedProjectIds.has(p.id);
+            return (
+              <button
+                key={p.id}
+                onClick={() => {
+                  setSelectedProjectIds((prev) => {
+                    const next =
+                      prev === null ? new Set(projects.map((x) => x.id)) : new Set(prev);
+                    if (next.has(p.id)) next.delete(p.id);
+                    else next.add(p.id);
+                    return next;
+                  });
+                }}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border transition ${
+                  active
+                    ? 'bg-surface-900 border-surface-500 text-slate-100'
+                    : 'bg-surface-900/30 border-surface-700 text-slate-500 line-through'
+                }`}
+              >
+                <span
+                  className="w-2 h-2 rounded-full"
+                  style={{ backgroundColor: p.color }}
+                />
+                {p.name}
+              </button>
+            );
+          })}
+          <button
+            onClick={() => setIncludeNoProject((v) => !v)}
+            className={`px-2.5 py-1 rounded-full border transition ${
+              includeNoProject
+                ? 'bg-surface-900 border-surface-500 text-slate-100'
+                : 'bg-surface-900/30 border-surface-700 text-slate-500 line-through'
+            }`}
+          >
+            No Project
+          </button>
+          <button
+            onClick={() => setIncludeUnscheduledInGrid((v) => !v)}
+            className={`px-2.5 py-1 rounded-full border transition ${
+              includeUnscheduledInGrid
+                ? 'bg-sky-500/15 border-sky-500/40 text-sky-200'
+                : 'bg-surface-900/30 border-surface-700 text-slate-500 line-through'
+            }`}
+          >
+            Unscheduled Tasks
+          </button>
+          <button
+            onClick={() => setIncludeCalendarEvents((v) => !v)}
+            className={`px-2.5 py-1 rounded-full border transition ${
+              includeCalendarEvents
+                ? 'bg-indigo-500/15 border-indigo-500/40 text-indigo-200'
+                : 'bg-surface-900/30 border-surface-700 text-slate-500 line-through'
+            }`}
+          >
+            Calendar Events
+          </button>
+          {(selectedProjectIds !== null ||
+            !includeNoProject ||
+            !includeUnscheduledInGrid ||
+            !includeCalendarEvents) && (
+            <button
+              onClick={() => {
+                setSelectedProjectIds(null);
+                setIncludeNoProject(true);
+                setIncludeUnscheduledInGrid(true);
+                setIncludeCalendarEvents(true);
+              }}
+              className="ml-auto text-[11px] text-indigo-300 hover:text-indigo-200 underline"
+            >
+              Reset filters
+            </button>
+          )}
+        </div>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
         {/* Morgen-style Unscheduled Tasks Sidebar */}
         {showUnscheduled && (
@@ -504,6 +625,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
           onTimeBlockTask={onTimeBlockTask}
           onReloadRange={loadRange}
           getEventDurationMinutes={getEventDurationMinutes}
+          onSelectEvent={(evt) => setDetailTarget({ kind: 'event', event: evt })}
         />
       )}
 
@@ -512,7 +634,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
         <div className="grid grid-cols-1 md:grid-cols-7 gap-3">
           {days.map((day) => {
             const key = toLocalYmd(day);
-            const dayEvents = eventsByDay.get(key) ?? [];
+            const dayEvents = includeCalendarEvents ? (eventsByDay.get(key) ?? []) : [];
             const dayTasks = tasksByDay.get(key) ?? [];
             const isToday = key === todayKey;
             const isSelected = key === selectedDayKey;
@@ -585,7 +707,11 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                     return (
                       <div
                         key={`${evt.calendarId}-${evt.id}`}
-                        className="p-2 rounded-xl bg-surface-900/80 border border-surface-700 space-y-1.5"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDetailTarget({ kind: 'event', event: evt });
+                        }}
+                        className="p-2 rounded-xl bg-surface-900/80 border border-surface-700 hover:border-indigo-500/60 space-y-1.5 cursor-pointer transition"
                       >
                         <div className="flex items-center justify-between gap-1">
                           <span className="text-[10px] text-indigo-300 font-medium truncate">
@@ -593,7 +719,9 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                           </span>
                           <select
                             value={evt.priority ?? 3}
+                            onClick={(e) => e.stopPropagation()}
                             onChange={(e) => {
+                              e.stopPropagation();
                               const p = Number(e.target.value) as Priority;
                               onSetEventPriority(evt.id, p);
                               setEvents((prev) =>
@@ -622,28 +750,35 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
 
                         <div className="flex items-center gap-1 pt-0.5 flex-wrap">
                           <button
-                            onClick={() =>
+                            onClick={(e) => {
+                              e.stopPropagation();
                               onStartFocus({
                                 type: 'event',
                                 id: evt.id,
                                 title: evt.summary,
                                 calendarEventId: evt.id,
                                 durationMinutes: getEventDurationMinutes(evt),
-                              })
-                            }
+                              });
+                            }}
                             className="flex items-center gap-1 px-2 py-1 rounded bg-indigo-500/20 hover:bg-indigo-500 text-indigo-300 hover:text-white text-[10px] font-medium"
                           >
                             <Play className="w-2.5 h-2.5" /> Focus
                           </button>
                           <button
-                            onClick={() => onConvertEventToTask(evt)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onConvertEventToTask(evt);
+                            }}
                             className="flex items-center gap-1 px-1.5 py-1 rounded bg-emerald-500/15 hover:bg-emerald-500/30 border border-emerald-500/30 text-emerald-300 text-[10px] font-medium"
                             title="Turn this Calendar Event into a Task with its calendar duration"
                           >
                             <ListTodo className="w-2.5 h-2.5" /> To Task
                           </button>
                           <button
-                            onClick={() => openRescheduleEvent(evt)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openRescheduleEvent(evt);
+                            }}
                             className="p-1 rounded bg-surface-700 hover:bg-surface-600 text-slate-300"
                             title="Reschedule"
                           >
@@ -693,40 +828,50 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                     );
                   })}
 
-                  {dayTasks.map((t) => (
-                    <div
-                      key={t.id}
-                      className="p-2 rounded-xl bg-sky-500/10 border border-sky-500/30 space-y-1"
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="text-[10px] text-sky-300 font-medium">
-                          Task Due
-                        </span>
-                        <span
-                          className={`text-[10px] px-1 rounded border ${getPriorityMeta(t.priority).badgeClass}`}
+                  {dayTasks.map((t) => {
+                    const isQuickReminder = Boolean(t.durationMinutes && t.durationMinutes <= 10);
+                    if (isQuickReminder) {
+                      return (
+                        <div
+                          key={t.id}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDetailTarget({ kind: 'task', task: t });
+                          }}
+                          className="px-2 py-1 rounded-lg bg-amber-500/10 border border-amber-500/30 hover:border-amber-400 flex items-center justify-between gap-1.5 cursor-pointer text-[11px]"
+                          title="Quick reminder task (click for details)"
                         >
-                          {getPriorityMeta(t.priority).short}
-                        </span>
-                      </div>
-                      <p className="text-xs text-slate-100 line-clamp-2">
-                        {t.title}
-                      </p>
-                      <input
-                        type="date"
-                        value={extractYmd(t.dueDate)}
-                        onChange={(e) => {
-                          if (e.target.value) {
-                            onRescheduleTask(
-                              t,
-                              new Date(`${e.target.value}T00:00:00.000Z`).toISOString()
-                            );
-                          }
+                          <span className="truncate text-amber-200">
+                            ⏰ {t.durationMinutes}m · {t.title}
+                          </span>
+                        </div>
+                      );
+                    }
+                    return (
+                      <div
+                        key={t.id}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDetailTarget({ kind: 'task', task: t });
                         }}
-                        className="w-full rounded bg-surface-900 border border-surface-700 px-1.5 py-0.5 text-[10px] text-slate-300"
-                        title="Reschedule task due date"
-                      />
-                    </div>
-                  ))}
+                        className="p-2 rounded-xl bg-sky-500/10 border border-sky-500/30 hover:border-sky-400 space-y-1 cursor-pointer transition"
+                      >
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-[10px] text-sky-300 font-medium truncate">
+                            Task Due {extractYmd(t.dueDate).slice(5)}
+                          </span>
+                          <span
+                            className={`text-[10px] px-1 rounded border ${getPriorityMeta(t.priority).badgeClass}`}
+                          >
+                            {getPriorityMeta(t.priority).short}
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-100 line-clamp-2">
+                          {t.title}
+                        </p>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             );
@@ -749,7 +894,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
               const inMonth = day.getMonth() === cursor.getMonth();
               const isToday = key === todayKey;
               const isSelected = key === selectedDayKey;
-              const dayEvents = eventsByDay.get(key) ?? [];
+              const dayEvents = includeCalendarEvents ? (eventsByDay.get(key) ?? []) : [];
               const dayTasks = tasksByDay.get(key) ?? [];
               const focusMins = focusMinutesByDay.get(key) ?? 0;
 
@@ -890,7 +1035,8 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                 {selectedDayTasks.map((t) => (
                   <div
                     key={t.id}
-                    className="p-3 rounded-xl bg-sky-500/10 border border-sky-500/30 flex items-center justify-between gap-2"
+                    onClick={() => setDetailTarget({ kind: 'task', task: t })}
+                    className="p-3 rounded-xl bg-sky-500/10 border border-sky-500/30 hover:border-sky-400 flex items-center justify-between gap-2 cursor-pointer transition"
                   >
                     <div className="min-w-0">
                       <div className="text-xs text-sky-300">Task Due</div>
@@ -899,13 +1045,14 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                       </div>
                     </div>
                     <button
-                      onClick={() =>
+                      onClick={(e) => {
+                        e.stopPropagation();
                         onStartFocus({
                           type: 'task',
                           id: t.id,
                           title: t.title,
-                        })
-                      }
+                        });
+                      }}
                       className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-indigo-500/20 hover:bg-indigo-500 text-indigo-300 hover:text-white text-xs font-medium"
                     >
                       <Play className="w-3 h-3" /> Focus
@@ -919,6 +1066,19 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
       )}
         </div>
       </div>
+
+      <TaskEventDetailModal
+        target={detailTarget}
+        tasks={tasks}
+        projects={projects}
+        onClose={() => setDetailTarget(null)}
+        onStartFocus={onStartFocus}
+        onToggleTask={onToggleTask}
+        onTimeBlockTask={(task) => {
+          onTimeBlockTask(task, selectedDayKey).then(() => loadRange());
+        }}
+        onConvertEventToTask={onConvertEventToTask}
+      />
     </div>
   );
 };

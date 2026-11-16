@@ -43,6 +43,7 @@ interface DaySchedulePanelProps {
   ) => void;
   onDeleteEvent: (evt: CalendarEvent) => void;
   getEventDurationMinutes: (evt?: CalendarEvent) => number | undefined;
+  onSelectEvent?: (evt: CalendarEvent) => void;
 }
 
 export const DaySchedulePanel: React.FC<DaySchedulePanelProps> = ({
@@ -60,6 +61,7 @@ export const DaySchedulePanel: React.FC<DaySchedulePanelProps> = ({
   onStartFocus,
   onDeleteEvent,
   getEventDurationMinutes,
+  onSelectEvent,
 }) => {
   const [rescheduleEventId, setRescheduleEventId] = useState<string | null>(
     null
@@ -181,7 +183,12 @@ export const DaySchedulePanel: React.FC<DaySchedulePanelProps> = ({
                         </span>
                       )}
                     </div>
-                    <h4 className="text-sm font-semibold text-slate-100 mt-1 truncate">
+                    <h4
+                      onClick={() => onSelectEvent?.(evt)}
+                      className={`text-sm font-semibold text-slate-100 mt-1 truncate ${
+                        onSelectEvent ? 'cursor-pointer hover:text-indigo-300' : ''
+                      }`}
+                    >
                       {evt.summary}
                     </h4>
                     {linkedTask && (

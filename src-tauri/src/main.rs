@@ -78,7 +78,7 @@ fn ensure_main_window_with(app: &AppHandle, visible: bool) {
     let _ = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
         .title("FocusFlow")
         .inner_size(1220.0, 820.0)
-        .min_inner_size(960.0, 640.0)
+        .min_inner_size(1220.0, 820.0)
         .visible(visible)
         .build();
 }

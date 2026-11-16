@@ -15,6 +15,7 @@ import type {
   TimerState,
 } from '../types';
 import { ShutdownReviewModal } from './ShutdownReviewModal';
+import { TaskEventDetailModal, type DetailModalTarget } from './TaskEventDetailModal';
 import { TimelineView } from './TimelineView';
 import { DaySchedulePanel } from './day/DaySchedulePanel';
 import { PomodoroCard } from './day/PomodoroCard';
@@ -164,6 +165,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
 }) => {
   const [sortEventsByPriority, setSortEventsByPriority] = useState(false);
   const [shutdownOpen, setShutdownOpen] = useState(false);
+  const [detailTarget, setDetailTarget] = useState<DetailModalTarget | null>(null);
 
   const sortedEvents = useMemo(() => {
     if (!sortEventsByPriority) return events;
@@ -377,6 +379,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
               onTimeBlockTask={onTimeBlockTask}
               onLinkTaskToEvent={onLinkTaskToEvent}
               onSyncGoogleTasks={onSyncGoogleTasks}
+              onSelectTask={(t) => setDetailTarget({ kind: 'task', task: t })}
             />
           </div>
 
@@ -397,6 +400,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
             onStartFocus={onStartFocus}
             onDeleteEvent={onDeleteEvent}
             getEventDurationMinutes={getEventDurationMinutes}
+            onSelectEvent={(evt) => setDetailTarget({ kind: 'event', event: evt })}
           />
         </div>
       )}
@@ -409,6 +413,17 @@ export const TodayView: React.FC<TodayViewProps> = ({
           onRunReview={onShutdownReview}
         />
       )}
+
+      <TaskEventDetailModal
+        target={detailTarget}
+        tasks={tasks}
+        projects={projects}
+        onClose={() => setDetailTarget(null)}
+        onStartFocus={onStartFocus}
+        onToggleTask={onToggleTask}
+        onTimeBlockTask={onTimeBlockTask}
+        onConvertEventToTask={onConvertEventToTask}
+      />
     </div>
   );
 };

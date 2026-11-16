@@ -113,6 +113,7 @@ interface TaskListPanelProps {
   onMoveTask?: (taskId: string, newParentId?: string | null) => Promise<boolean>;
   parentCompletionPrompt?: { parentId: string; parentTitle: string } | null;
   onDismissParentCompletionPrompt?: () => void;
+  onSelectTask?: (task: TaskItem) => void;
 }
 
 export const TaskListPanel: React.FC<TaskListPanelProps> = ({
@@ -143,6 +144,7 @@ export const TaskListPanel: React.FC<TaskListPanelProps> = ({
   onMoveTask,
   parentCompletionPrompt,
   onDismissParentCompletionPrompt,
+  onSelectTask,
 }) => {
   const [quickTitle, setQuickTitle] = useState('');
   const [quickPriority, setQuickPriority] = useState<Priority>(3);
@@ -476,7 +478,10 @@ export const TaskListPanel: React.FC<TaskListPanelProps> = ({
 
                     <div className="flex-1 min-w-0">
                       <p
+                        onClick={() => onSelectTask?.(task)}
                         className={`text-sm font-medium truncate ${
+                          onSelectTask ? 'cursor-pointer hover:text-indigo-300' : ''
+                        } ${
                           task.completed
                             ? 'line-through text-slate-500'
                             : 'text-slate-100'

@@ -18,6 +18,7 @@ interface DayHourlyGridProps {
   onTimeBlockTask: (task: TaskItem, targetDateKey: string) => Promise<void>;
   onReloadRange: () => Promise<void>;
   getEventDurationMinutes: (evt: CalendarEvent) => number | undefined;
+  onSelectEvent?: (evt: CalendarEvent) => void;
 }
 
 export const DayHourlyGrid: React.FC<DayHourlyGridProps> = ({
@@ -30,6 +31,7 @@ export const DayHourlyGrid: React.FC<DayHourlyGridProps> = ({
   onTimeBlockTask,
   onReloadRange,
   getEventDurationMinutes,
+  onSelectEvent,
 }) => {
   const [dragOverHour, setDragOverHour] = useState<number | null>(null);
 
@@ -117,7 +119,8 @@ export const DayHourlyGrid: React.FC<DayHourlyGridProps> = ({
                 {slotEvents.map((evt) => (
                   <div
                     key={evt.id}
-                    className="flex items-center justify-between gap-2 px-3 py-1.5 rounded-xl bg-surface-900/90 border border-surface-600 text-xs flex-1 min-w-[200px]"
+                    onClick={() => onSelectEvent?.(evt)}
+                    className="flex items-center justify-between gap-2 px-3 py-1.5 rounded-xl bg-surface-900/90 border border-surface-600 hover:border-indigo-500/60 text-xs flex-1 min-w-[200px] cursor-pointer transition"
                   >
                     <div className="min-w-0">
                       <span className="text-indigo-300 font-mono mr-2">
@@ -128,15 +131,16 @@ export const DayHourlyGrid: React.FC<DayHourlyGridProps> = ({
                       </span>
                     </div>
                     <button
-                      onClick={() =>
+                      onClick={(e) => {
+                        e.stopPropagation();
                         onStartFocus({
                           type: 'event',
                           id: evt.id,
                           title: evt.summary,
                           calendarEventId: evt.id,
                           durationMinutes: getEventDurationMinutes(evt),
-                        })
-                      }
+                        });
+                      }}
                       className="px-2 py-0.5 rounded bg-indigo-500/20 hover:bg-indigo-500 text-indigo-300 hover:text-white text-[11px] font-medium shrink-0"
                     >
                       Focus

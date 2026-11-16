@@ -255,6 +255,7 @@ pub async fn plan_tasks_with_options(
             .tasks
             .iter()
             .filter(|t| crate::task_tree::is_open_unit_representative(&app_data.tasks, t))
+            .filter(|t| t.duration_minutes.map(|m| m > 10).unwrap_or(true))
             .filter(|t| {
                 t.blocked_by_task_ids
                     .iter()
