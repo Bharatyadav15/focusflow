@@ -55,6 +55,7 @@ interface TodayViewProps {
     target: TimerState['activeTarget'],
     asStopwatch?: boolean
   ) => void;
+  onCompleteActiveTarget?: () => void;
   onAddTask: (
     title: string,
     taskListId?: string,
@@ -137,6 +138,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
   onFinishStopwatch,
   onExtendTimer,
   onStartFocus,
+  onCompleteActiveTarget,
   onAddTask,
   templates = [],
   onApplyTemplate,
@@ -349,6 +351,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
               onResetTimer={onResetTimer}
               onFinishStopwatch={onFinishStopwatch}
               onExtendTimer={onExtendTimer}
+              onCompleteActiveTarget={onCompleteActiveTarget}
             />
 
             <TaskListPanel

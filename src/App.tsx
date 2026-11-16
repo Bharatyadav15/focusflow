@@ -536,6 +536,7 @@ export function App() {
             onFinishStopwatch={finishStopwatch}
             onSwitchMode={switchMode}
             onStartFocus={startFocusOnTarget}
+            onCompleteActiveTarget={completeActiveTarget}
             onToggleTask={toggleTaskCompleted}
             onDeleteTask={deleteTask}
             onAddTask={handleQuickAddTask}

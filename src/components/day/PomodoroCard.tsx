@@ -20,6 +20,7 @@ interface PomodoroCardProps {
   onResetTimer: () => void;
   onFinishStopwatch: () => void;
   onExtendTimer?: (minutes: number) => void;
+  onCompleteActiveTarget?: () => void;
 }
 
 export const PomodoroCard: React.FC<PomodoroCardProps> = ({
@@ -31,6 +32,7 @@ export const PomodoroCard: React.FC<PomodoroCardProps> = ({
   onResetTimer,
   onFinishStopwatch,
   onExtendTimer,
+  onCompleteActiveTarget,
 }) => {
   const { mins, secs } = formatTimer(timer.secondsLeft);
   const progress =
@@ -159,6 +161,15 @@ export const PomodoroCard: React.FC<PomodoroCardProps> = ({
               title="Add 5 minutes to the timer"
             >
               +5 min
+            </button>
+          )}
+          {onCompleteActiveTarget && timer.activeTarget && (
+            <button
+              onClick={onCompleteActiveTarget}
+              className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500 border border-emerald-500/40 text-emerald-200 hover:text-white text-sm font-semibold transition"
+              title="Mark current task finished and log session"
+            >
+              <CheckCircle2 className="w-4 h-4" /> Finish Task
             </button>
           )}
           <button
