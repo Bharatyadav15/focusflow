@@ -154,6 +154,19 @@ export interface IdleReturnPrompt {
   taskId?: string;
 }
 
+export type SnoozeMinutes = 5 | 15 | 30;
+
+export interface UpcomingReminder {
+  kind: 'event' | 'task';
+  id: string;
+  title: string;
+  startIso: string;
+  durationMinutes?: number;
+  projectId?: string;
+  event?: CalendarEvent;
+  task?: TaskItem;
+}
+
 export interface ShutdownReviewResult {
   ok: boolean;
   dryRun: boolean;
@@ -315,6 +328,10 @@ export interface ElectronAPI {
   setAmbientPreset: (preset: string) => void;
   onAmbientPreset: (cb: (preset: string) => void) => () => void;
   onUpcomingEvent: (cb: (evt: CalendarEvent) => void) => () => void;
+  onUpcomingTask?: (cb: (task: TaskItem) => void) => () => void;
+  onReminderSnoozed?: (
+    cb: (payload: { kind: string; id: string; title: string; minutes: number }) => void
+  ) => () => void;
   onDistractionAlert: (cb: (msg: string) => void) => () => void;
   onIdleReturned?: (cb: (payload: IdleReturnPrompt) => void) => () => void;
   shiftFollowingBlocks?: (

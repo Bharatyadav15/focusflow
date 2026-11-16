@@ -238,6 +238,15 @@ export function initTauriBridgeIfNeeded() {
       subscribeEvent<string>('ambient:sync', cb),
     onUpcomingEvent: (cb: (evt: CalendarEvent) => void) =>
       subscribeEvent<CalendarEvent>('event:upcoming', cb),
+    onUpcomingTask: (cb: (task: TaskItem) => void) =>
+      subscribeEvent<TaskItem>('task:upcoming', cb),
+    onReminderSnoozed: (
+      cb: (payload: { kind: string; id: string; title: string; minutes: number }) => void
+    ) =>
+      subscribeEvent<{ kind: string; id: string; title: string; minutes: number }>(
+        'reminder:snoozed',
+        cb
+      ),
     onDistractionAlert: (cb: (msg: string) => void) =>
       subscribeEvent<string>('distraction:alert', cb),
     onIdleReturned: (cb: (payload: IdleReturnPrompt) => void) =>

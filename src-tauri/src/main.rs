@@ -23,7 +23,7 @@ use tauri::{
     WindowEvent,
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
-use tauri_plugin_notification::NotificationExt;
+use tauri_plugin_notification::{Action, ActionType, NotificationExt};
 use types::{
     ActiveTarget, AppData, AppSettings, CalendarEvent, EventMetadata, GoogleCalendarInfo,
     PomodoroSession, Project, TaskItem, TaskTemplate, TimerState,
@@ -1700,9 +1700,47 @@ fn start_background_loops(app: AppHandle) {
                             .notification()
                             .builder()
                             .title(&format!("Starting in {}m: {}", mins_away, evt.summary))
-                            .body("Click Focus in FocusFlow to start a Pomodoro for this block.")
+                            .body("Choose Snooze 5m/15m/30m or click to open FocusFlow.")
+                            .action_type_id("pre_start_snooze")
+                            .extra("itemKind", "event")
+                            .extra("itemId", &evt.id)
+                            .extra("itemTitle", &evt.summary)
+                            .extra("itemStart", &evt.start)
                             .show();
                         let _ = app_rem.emit("event:upcoming", evt);
+                    }
+                }
+            }
+
+            // Also notify for scheduled tasks about to start (without duplicating linked events)
+            let app_data_tasks = state.store.get_app_data().tasks;
+            for task in app_data_tasks {
+                if task.completed || task.linked_event_id.is_some() || task.calendar_event_id.is_some() {
+                    continue;
+                }
+                let Some(ref sched_start) = task.scheduled_start else {
+                    continue;
+                };
+                let Ok(dt) = chrono::DateTime::parse_from_rfc3339(sched_start) else {
+                    continue;
+                };
+                let diff = dt.timestamp() - now_ts;
+                if diff > 0 && diff <= lead_secs {
+                    let key = format!("task-{}-{}", task.id, sched_start);
+                    if reminded.insert(key) {
+                        let mins_away = ((diff + 59) / 60).max(1);
+                        let _ = app_rem
+                            .notification()
+                            .builder()
+                            .title(&format!("Task starting in {}m: {}", mins_away, task.title))
+                            .body("Choose Snooze 5m/15m/30m or click to open FocusFlow.")
+                            .action_type_id("pre_start_snooze")
+                            .extra("itemKind", "task")
+                            .extra("itemId", &task.id)
+                            .extra("itemTitle", &task.title)
+                            .extra("itemStart", sched_start)
+                            .show();
+                        let _ = app_rem.emit("task:upcoming", task);
                     }
                 }
             }
@@ -2092,6 +2130,102 @@ fn main() {
             ensure_main_window_with(&handle, !launched_at_login);
             ensure_taskbar_window(&handle);
             register_notification_identity(&handle.config().identifier);
+
+            let _ = handle.notification().register_action_types(vec![
+                ActionType::builder("pre_start_snooze")
+                    .actions(vec![
+                        Action::builder("snooze_5m", "Snooze 5m").build(),
+                        Action::builder("snooze_15m", "Snooze 15m").build(),
+                        Action::builder("snooze_30m", "Snooze 30m").build(),
+                    ])
+                    .build(),
+            ]);
+            let notif_handle = handle.clone();
+            let _ = handle.notification().on_action(move |performed| {
+                let act_id = performed.action_id();
+                let snooze_mins: Option<u64> = match act_id {
+                    "snooze_5m" => Some(5),
+                    "snooze_15m" => Some(15),
+                    "snooze_30m" => Some(30),
+                    _ => None,
+                };
+                if let Some(mins) = snooze_mins {
+                    let extra = performed.notification().map(|n| n.extra());
+                    let kind = extra
+                        .and_then(|m| m.get("itemKind"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("event")
+                        .to_string();
+                    let item_id = extra
+                        .and_then(|m| m.get("itemId"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let title = extra
+                        .and_then(|m| m.get("itemTitle"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Upcoming item")
+                        .to_string();
+                    let start = extra
+                        .and_then(|m| m.get("itemStart"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    store::append_app_log(
+                        "REMINDER",
+                        &format!("Snoozed {} '{}' for {}m from native notification", kind, title, mins),
+                    );
+                    let _ = notif_handle.emit(
+                        "reminder:snoozed",
+                        serde_json::json!({
+                            "kind": kind,
+                            "id": item_id,
+                            "title": title,
+                            "minutes": mins,
+                        }),
+                    );
+                    let h2 = notif_handle.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_secs(mins * 60));
+                        let _ = h2
+                            .notification()
+                            .builder()
+                            .title(&format!("Snoozed reminder: {}", title))
+                            .body("Choose Snooze 5m/15m/30m or click to open FocusFlow.")
+                            .action_type_id("pre_start_snooze")
+                            .extra("itemKind", &kind)
+                            .extra("itemId", &item_id)
+                            .extra("itemTitle", &title)
+                            .extra("itemStart", &start)
+                            .show();
+                        if let Some(st) = h2.try_state::<AppState>() {
+                            if kind == "task" {
+                                if let Some(t) = st
+                                    .store
+                                    .get_app_data()
+                                    .tasks
+                                    .into_iter()
+                                    .find(|t| t.id == item_id && !t.completed)
+                                {
+                                    let _ = h2.emit("task:upcoming", t);
+                                }
+                            } else {
+                                let mut evts = st.cached_events.lock().unwrap().clone();
+                                for le in st.store.get_local_events() {
+                                    if !evts.iter().any(|e| e.id == le.id) {
+                                        evts.push(le);
+                                    }
+                                }
+                                if let Some(ev) = evts.into_iter().find(|e| e.id == item_id) {
+                                    let _ = h2.emit("event:upcoming", ev);
+                                }
+                            }
+                        }
+                    });
+                } else {
+                    ensure_main_window_with(&notif_handle, true);
+                }
+            });
 
             if let Some(s) = handle.try_state::<AppState>() {
                 let cfg = s.store.get_settings();

@@ -9,10 +9,12 @@ import type {
   Project,
   RecurrenceRule,
   ShutdownReviewResult,
+  SnoozeMinutes,
   TaskItem,
   TaskTemplate,
   TimerMode,
   TimerState,
+  UpcomingReminder,
 } from '../types';
 import { ShutdownReviewModal } from './ShutdownReviewModal';
 import { TaskEventDetailModal, type DetailModalTarget } from './TaskEventDetailModal';
@@ -40,9 +42,9 @@ interface TodayViewProps {
   timer: TimerState;
   loadingEvents: boolean;
   syncingTasks: boolean;
-  upcomingReminder: CalendarEvent | null;
+  upcomingReminder: UpcomingReminder | null;
   onDismissUpcomingReminder?: () => void;
-  onSnoozeUpcomingReminder?: (mode: '5m' | 'start') => void;
+  onSnoozeUpcomingReminder?: (minutes: SnoozeMinutes) => void;
   ambientPreset?: AmbientPreset;
   onChangeAmbient?: (preset: AmbientPreset) => void;
   onPlanMyDay?: () => void;
@@ -191,6 +193,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
   const [sortEventsByPriority, setSortEventsByPriority] = useState(false);
   const [shutdownOpen, setShutdownOpen] = useState(false);
   const [detailTarget, setDetailTarget] = useState<DetailModalTarget | null>(null);
+  const [snoozeMinutes, setSnoozeMinutes] = useState<SnoozeMinutes>(5);
 
   const sortedEvents = useMemo(() => {
     if (!sortEventsByPriority) return events;
@@ -302,15 +305,17 @@ export const TodayView: React.FC<TodayViewProps> = ({
           {/* Left Column: Up Next Pomodoro Card + Tasks */}
           <div className="lg:col-span-7 flex flex-col gap-6 min-h-0">
             {upcomingReminder && (
-              <div className="rounded-2xl bg-amber-500/10 border border-amber-500/40 px-4 py-3 flex items-center justify-between gap-3">
+              <div className="rounded-2xl bg-amber-500/10 border border-amber-500/40 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-2.5 min-w-0">
                   <BellRing className="w-4 h-4 text-amber-300 shrink-0" />
                   <div className="min-w-0">
                     <p className="text-xs font-semibold text-amber-200 truncate">
-                      Upcoming Event: {upcomingReminder.summary}
+                      {upcomingReminder.kind === 'task'
+                        ? `Upcoming Task: ${upcomingReminder.title}`
+                        : `Upcoming Event: ${upcomingReminder.title}`}
                     </p>
                     <p className="text-[11px] text-amber-300/80">
-                      Starts at {formatTime(upcomingReminder.start)}
+                      Starts at {formatTime(upcomingReminder.startIso)}
                     </p>
                   </div>
                 </div>
@@ -318,12 +323,13 @@ export const TodayView: React.FC<TodayViewProps> = ({
                   <button
                     onClick={() => {
                       onStartFocus({
-                        type: 'event',
+                        type: upcomingReminder.kind,
                         id: upcomingReminder.id,
-                        title: upcomingReminder.summary,
-                        calendarEventId: upcomingReminder.id,
-                        durationMinutes:
-                          getEventDurationMinutes(upcomingReminder),
+                        title: upcomingReminder.title,
+                        calendarEventId:
+                          upcomingReminder.kind === 'event' ? upcomingReminder.id : undefined,
+                        projectId: upcomingReminder.projectId,
+                        durationMinutes: upcomingReminder.durationMinutes,
                       });
                       onDismissUpcomingReminder?.();
                     }}
@@ -332,25 +338,27 @@ export const TodayView: React.FC<TodayViewProps> = ({
                     Start Focus
                   </button>
                   {onSnoozeUpcomingReminder && (
-                    <>
-                      <button
-                        onClick={() => onSnoozeUpcomingReminder('5m')}
-                        className="px-2 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-200 text-xs transition"
-                        title="Remind again in 5 minutes"
+                    <div className="flex items-center gap-1">
+                      <select
+                        aria-label="Snooze duration"
+                        value={snoozeMinutes}
+                        onChange={(e) =>
+                          setSnoozeMinutes(Number(e.target.value) as SnoozeMinutes)
+                        }
+                        className="rounded-lg bg-surface-900 border border-amber-500/40 px-2 py-1 text-xs text-amber-200 focus:outline-none focus:border-amber-400"
                       >
-                        Snooze 5m
+                        <option value={5}>5 min</option>
+                        <option value={15}>15 min</option>
+                        <option value={30}>30 min</option>
+                      </select>
+                      <button
+                        onClick={() => onSnoozeUpcomingReminder(snoozeMinutes)}
+                        className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/35 border border-amber-500/40 text-amber-100 text-xs font-medium transition"
+                        title={`Snooze reminder for ${snoozeMinutes} minutes`}
+                      >
+                        Snooze
                       </button>
-                      {new Date(upcomingReminder.start).getTime() >
-                        Date.now() + 20_000 && (
-                        <button
-                          onClick={() => onSnoozeUpcomingReminder('start')}
-                          className="px-2 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-200 text-xs transition"
-                          title="Remind again when the event starts"
-                        >
-                          At Start
-                        </button>
-                      )}
-                    </>
+                    </div>
                   )}
                   {onDismissUpcomingReminder && (
                     <button

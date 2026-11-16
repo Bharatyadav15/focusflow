@@ -9,8 +9,10 @@ import type {
   Priority,
   Project,
   RecurrenceRule,
+  SnoozeMinutes,
   TaskItem,
   TaskTemplate,
+  UpcomingReminder,
 } from '../types';
 import { useTimerController } from './useTimerController';
 import { extractYmd, localOffsetToDueIso, nextRecurrenceDueIso } from '../utils/time';
@@ -84,9 +86,8 @@ export function useFocusFlow(isFloating = false) {
     parentId: string;
     parentTitle: string;
   } | null>(null);
-  const [upcomingReminder, setUpcomingReminder] = useState<CalendarEvent | null>(
-    null
-  );
+  const [upcomingReminder, setUpcomingReminder] =
+    useState<UpcomingReminder | null>(null);
   const [idleReturnPrompt, setIdleReturnPrompt] =
     useState<IdleReturnPrompt | null>(null);
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
@@ -178,9 +179,39 @@ export function useFocusFlow(isFloating = false) {
     if (!api) return;
     api.getTimerState().then((initial) => setTimer(initial));
     const unsubTimer = api.onTimerState((incoming) => setTimer(incoming));
-    const unsubUpcoming = api.onUpcomingEvent((evt) =>
-      setUpcomingReminder(evt)
-    );
+    const unsubUpcoming = api.onUpcomingEvent((evt) => {
+      const dur = evt.isAllDay
+        ? undefined
+        : Math.max(
+            0,
+            Math.round((new Date(evt.end).getTime() - new Date(evt.start).getTime()) / 60_000)
+          ) || undefined;
+      setUpcomingReminder({
+        kind: 'event',
+        id: evt.id,
+        title: evt.summary,
+        startIso: evt.start,
+        durationMinutes: dur,
+        projectId: evt.projectId,
+        event: evt,
+      });
+    });
+    const unsubUpcomingTask = api.onUpcomingTask?.((task) => {
+      if (!task.scheduledStart) return;
+      setUpcomingReminder({
+        kind: 'task',
+        id: task.id,
+        title: task.title,
+        startIso: task.scheduledStart,
+        durationMinutes: task.durationMinutes,
+        projectId: task.projectId,
+        task,
+      });
+    });
+    const unsubSnoozed = api.onReminderSnoozed?.(({ id, title, minutes }) => {
+      setUpcomingReminder((cur) => (cur && cur.id === id ? null : cur));
+      notify(`Snoozed "${title}" for ${minutes}m`);
+    });
     const unsubDistraction = api.onDistractionAlert((msg) => notify(msg));
     const unsubIdle = api.onIdleReturned?.((payload) =>
       setIdleReturnPrompt(payload)
@@ -192,6 +223,8 @@ export function useFocusFlow(isFloating = false) {
     return () => {
       unsubTimer();
       unsubUpcoming();
+      unsubUpcomingTask?.();
+      unsubSnoozed?.();
       unsubDistraction();
       unsubIdle?.();
       unsubData();
@@ -1099,26 +1132,21 @@ export function useFocusFlow(isFloating = false) {
   );
 
   const snoozeUpcomingReminder = useCallback(
-    (mode: '5m' | 'start') => {
-      const evt = upcomingReminder;
-      if (!evt) return;
+    (minutes: SnoozeMinutes) => {
+      const item = upcomingReminder;
+      if (!item) return;
       if (snoozeTimerRef.current !== null) {
         window.clearTimeout(snoozeTimerRef.current);
       }
       setUpcomingReminder(null);
-      const delayMs =
-        mode === 'start'
-          ? Math.max(15_000, new Date(evt.start).getTime() - Date.now())
-          : 5 * 60_000;
-      const mins = Math.max(1, Math.round(delayMs / 60_000));
-      notify(
-        mode === 'start'
-          ? `Snoozed "${evt.summary}" until event start`
-          : `Snoozed "${evt.summary}" for ${mins}m`
-      );
+      const delayMs = minutes * 60_000;
+      notify(`Snoozed "${item.title}" for ${minutes}m`);
       snoozeTimerRef.current = window.setTimeout(() => {
-        setUpcomingReminder(evt);
-        api?.showNotification('Upcoming Event', evt.summary);
+        setUpcomingReminder(item);
+        api?.showNotification(
+          item.kind === 'task' ? 'Upcoming Task' : 'Upcoming Event',
+          item.title
+        );
         snoozeTimerRef.current = null;
       }, delayMs);
     },
