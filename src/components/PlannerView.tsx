@@ -699,6 +699,49 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                 onDrop={async (e) => {
                   e.preventDefault();
                   setDragOverKey(null);
+                  const eventId = e.dataTransfer.getData('text/focusflow-event-id');
+                  if (eventId) {
+                    const evt = events.find((ev) => ev.id === eventId);
+                    if (evt && toLocalYmd(new Date(evt.start)) !== key) {
+                      setSelectedDayKey(key);
+                      const origStart = new Date(evt.start);
+                      const origEnd = new Date(evt.end);
+                      const durMs = Math.max(15 * 60_000, origEnd.getTime() - origStart.getTime());
+                      const [y, m, d] = key.split('-').map(Number);
+                      const nextStart = new Date(
+                        y,
+                        (m || 1) - 1,
+                        d || 1,
+                        evt.isAllDay ? 0 : origStart.getHours(),
+                        evt.isAllDay ? 0 : origStart.getMinutes(),
+                        0,
+                        0
+                      );
+                      const nextEnd = new Date(nextStart.getTime() + durMs);
+                      const startIso = nextStart.toISOString();
+                      const endIso = nextEnd.toISOString();
+                      onRescheduleEvent(evt, startIso, endIso);
+                      setEvents((prev) =>
+                        prev.map((item) =>
+                          item.id === evt.id ? { ...item, start: startIso, end: endIso } : item
+                        )
+                      );
+                    }
+                    return;
+                  }
+
+                  const weekTaskId = e.dataTransfer.getData('text/focusflow-week-task-id');
+                  if (weekTaskId) {
+                    const tk = tasks.find((t) => t.id === weekTaskId);
+                    if (tk && extractYmd(tk.dueDate) !== key) {
+                      setSelectedDayKey(key);
+                      const [y, m, d] = key.split('-').map(Number);
+                      const dueIso = new Date(y, (m || 1) - 1, d || 1, 12, 0, 0, 0).toISOString();
+                      onRescheduleTask(tk, dueIso);
+                    }
+                    return;
+                  }
+
                   const taskId = e.dataTransfer.getData('text/focusflow-task-id');
                   const dragged = tasks.find((tk) => tk.id === taskId);
                   if (dragged) {
@@ -752,11 +795,17 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                     return (
                       <div
                         key={`${evt.calendarId}-${evt.id}`}
+                        draggable
+                        onDragStart={(e) => {
+                          e.stopPropagation();
+                          e.dataTransfer.setData('text/focusflow-event-id', evt.id);
+                          e.dataTransfer.effectAllowed = 'move';
+                        }}
                         onClick={(e) => {
                           e.stopPropagation();
                           setDetailTarget({ kind: 'event', event: evt });
                         }}
-                        className="p-2 rounded-xl bg-surface-900/80 border border-surface-700 hover:border-indigo-500/60 space-y-1.5 cursor-pointer transition"
+                        className="p-2 rounded-xl bg-surface-900/80 border border-surface-700 hover:border-indigo-500/60 space-y-1.5 cursor-grab active:cursor-grabbing transition"
                       >
                         <div className="flex items-center justify-between gap-1">
                           <span className="text-[10px] text-indigo-300 font-medium truncate">
@@ -898,12 +947,18 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                       return (
                         <div
                           key={t.id}
+                          draggable
+                          onDragStart={(e) => {
+                            e.stopPropagation();
+                            e.dataTransfer.setData('text/focusflow-week-task-id', t.id);
+                            e.dataTransfer.effectAllowed = 'move';
+                          }}
                           onClick={(e) => {
                             e.stopPropagation();
                             setDetailTarget({ kind: 'task', task: t });
                           }}
-                          className="px-2 py-1 rounded-lg bg-amber-500/10 border border-amber-500/30 hover:border-amber-400 flex items-center justify-between gap-1.5 cursor-pointer text-[11px]"
-                          title="Quick reminder task (click for details)"
+                          className="px-2 py-1 rounded-lg bg-amber-500/10 border border-amber-500/30 hover:border-amber-400 flex items-center justify-between gap-1.5 cursor-grab active:cursor-grabbing text-[11px]"
+                          title="Quick reminder task (drag to reschedule or click for details)"
                         >
                           <span className="truncate text-amber-200">
                             ⏰ {t.durationMinutes}m · {t.title}
@@ -914,11 +969,17 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                     return (
                       <div
                         key={t.id}
+                        draggable
+                        onDragStart={(e) => {
+                          e.stopPropagation();
+                          e.dataTransfer.setData('text/focusflow-week-task-id', t.id);
+                          e.dataTransfer.effectAllowed = 'move';
+                        }}
                         onClick={(e) => {
                           e.stopPropagation();
                           setDetailTarget({ kind: 'task', task: t });
                         }}
-                        className="p-2 rounded-xl bg-sky-500/10 border border-sky-500/30 hover:border-sky-400 space-y-1 cursor-pointer transition"
+                        className="p-2 rounded-xl bg-sky-500/10 border border-sky-500/30 hover:border-sky-400 space-y-1 cursor-grab active:cursor-grabbing transition"
                       >
                         <div className="flex items-center justify-between gap-1">
                           <span className="text-[10px] text-sky-300 font-medium truncate">
