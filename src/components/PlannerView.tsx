@@ -343,7 +343,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
   );
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4 flex-1 min-h-0 flex flex-col">
       {/* Header Controls */}
       <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl bg-surface-800 border border-surface-600/70 px-5 py-3.5">
         <div className="flex items-center gap-3">
@@ -596,7 +596,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 flex-1 min-h-0">
         {/* Morgen-style Unscheduled Tasks Sidebar */}
         {showUnscheduled && (
           <UnscheduledSidebar
@@ -607,7 +607,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
           />
         )}
 
-        <div className={showUnscheduled ? 'lg:col-span-9' : 'lg:col-span-12'}>
+        <div className={`${showUnscheduled ? 'lg:col-span-9' : 'lg:col-span-12'} flex flex-col min-h-0`}>
       {/* DAY VIEW (Hourly Drop Slots 06:00-22:00) */}
       {mode === 'day' && (
         <DayHourlyGrid
@@ -633,7 +633,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
 
       {/* WEEK VIEW */}
       {mode === 'week' && (
-        <div className="grid grid-cols-1 md:grid-cols-7 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-7 gap-3 flex-1 min-h-0">
           {days.map((day) => {
             const key = toLocalYmd(day);
             const dayEvents = includeCalendarEvents ? (eventsByDay.get(key) ?? []) : [];
@@ -883,14 +883,14 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
 
       {/* MONTH VIEW */}
       {mode === 'month' && (
-        <div className="space-y-4">
+        <div className="space-y-3 flex-1 min-h-0 flex flex-col">
           <div className="grid grid-cols-7 gap-2 text-center text-xs text-slate-400 font-medium">
             {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((d) => (
               <div key={d}>{d}</div>
             ))}
           </div>
 
-          <div className="grid grid-cols-7 gap-2">
+          <div className="grid grid-cols-7 gap-2 flex-1 auto-rows-fr min-h-0">
             {days.map((day) => {
               const key = toLocalYmd(day);
               const inMonth = day.getMonth() === cursor.getMonth();

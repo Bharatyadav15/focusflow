@@ -213,7 +213,7 @@ export const TaskListPanel: React.FC<TaskListPanelProps> = ({
   return (
     <>
         {/* Google Tasks List */}
-        <div className="rounded-2xl bg-surface-800 border border-surface-600/70 p-5">
+        <div className="rounded-2xl bg-surface-800 border border-surface-600/70 p-5 flex-1 min-h-0 flex flex-col">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
             <h3 className="text-sm font-semibold text-slate-200">
               Google Tasks ({openTasks.length} open)
@@ -353,7 +353,7 @@ export const TaskListPanel: React.FC<TaskListPanelProps> = ({
             </button>
           </form>
 
-          <div className="space-y-2 max-h-[380px] overflow-y-auto pr-1">
+          <div className="space-y-2 flex-1 min-h-[260px] overflow-y-auto pr-1">
             {parentCompletionPrompt && (
               <div className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-xs text-emerald-200">
                 <span className="truncate">

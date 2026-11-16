@@ -71,8 +71,8 @@ export const DaySchedulePanel: React.FC<DaySchedulePanelProps> = ({
   const [evtEnd, setEvtEnd] = useState('10:00');
 
   return (
-    <div className="lg:col-span-5">
-      <div className="rounded-2xl bg-surface-800 border border-surface-600/70 p-5 h-full">
+    <div className="lg:col-span-5 flex flex-col min-h-0">
+      <div className="rounded-2xl bg-surface-800 border border-surface-600/70 p-5 flex-1 min-h-0 flex flex-col">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
             <Calendar className="w-4 h-4 text-indigo-400" />
@@ -115,7 +115,7 @@ export const DaySchedulePanel: React.FC<DaySchedulePanelProps> = ({
           </div>
         </div>
 
-        <div className="space-y-3 max-h-[580px] overflow-y-auto pr-1">
+        <div className="space-y-3 flex-1 min-h-[320px] overflow-y-auto pr-1">
           {sortedEvents.length === 0 && (
             <p className="text-sm text-slate-500 py-8 text-center">
               No events scheduled for today. Time-block a task from the left!

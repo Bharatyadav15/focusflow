@@ -472,7 +472,7 @@ export function App() {
       </header>
 
       {/* Main Content */}
-      <main className="flex-1 w-full px-6 py-5">
+      <main className="flex-1 min-h-0 w-full px-6 py-5 flex flex-col overflow-y-auto">
         {idleReturnPrompt && (
           <div className="mb-5 rounded-2xl bg-indigo-500/15 border border-indigo-500/40 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
             <div className="text-xs text-slate-100">

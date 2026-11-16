@@ -24,7 +24,7 @@ export const UnscheduledSidebar: React.FC<UnscheduledSidebarProps> = ({
   );
 
   return (
-    <div className="lg:col-span-3 rounded-2xl bg-surface-800 border border-surface-600/70 p-4 flex flex-col max-h-[640px]">
+    <div className="lg:col-span-3 rounded-2xl bg-surface-800 border border-surface-600/70 p-4 flex flex-col h-full min-h-[380px]">
       <div className="flex items-center justify-between mb-2">
         <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-300">
           Unscheduled Tasks
